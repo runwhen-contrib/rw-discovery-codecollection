@@ -7,7 +7,10 @@ only wires them in the right order:
   2. open the sync;
   3. push the cluster item, then in-scope namespace items, then everything
      else -- cluster -> namespaces -> rest;
-  4. commit with one partition per (type, parentPath) listed;
+  4. commit with one partition per (type, parentPath) listed -- including
+     the rollup source types (`pod`, `replicaset`, `endpointslice`, `event`)
+     read per namespace to feed rollups but never pushed as items
+     themselves (see `_fetch_namespace_rollup_sources`);
   5. return the summary result (`rw.discovery_summary.v1`).
 
 Any exception after step 2 -- including a failed commit -- aborts the open
@@ -53,6 +56,14 @@ CLUSTER_SCOPE_KEY = ""
 # summary envelope; sorted so which namespaces survive the cap is at least
 # deterministic.
 MAX_ROLLUP_SOURCES_UNAVAILABLE_ENTRIES = 50
+
+# Cluster-scoped counterpart to `rollup_context.ROLLUP_FACET_REQUIRED_SOURCES`:
+# `k8sCluster`'s rollup source (`node`) is read once per cluster (see
+# `NODES_PATH` above), not once per namespace, so it doesn't fit that dict's
+# per-namespace-context shape. Kept alongside it purely so
+# `tests/test_pack_yaml.py` can check `packs/kubernetes/pack.yaml`'s
+# `k8sCluster.populator.sources` against a single source of truth too.
+CLUSTER_ROLLUP_REQUIRED_SOURCES: dict[str, tuple[str, ...]] = {"k8sCluster": ("node",)}
 
 
 def scope_path_for(cluster_name: str) -> str:
@@ -423,8 +434,17 @@ def _get_namespace_or_stub(k8s: K8sClient, name: str) -> dict:
 
 def _fetch_namespace_rollup_sources(
     k8s: K8sClient, resources_by_type: dict[str, ApiResource], namespace: str
-) -> NamespaceRollupContext:
+) -> tuple[NamespaceRollupContext, list[tuple[str, Partition]]]:
+    """Fetches this namespace's rollup source collections once, building the
+    `NamespaceRollupContext` `rollups_for` reads from -- and, for the four
+    types in `ROLLUP_SOURCE_TYPES` (never pushed as items; `job` gets its own
+    partition from its normal listing in `_push_everything_else`), the
+    ordinary commit partition for this namespace's read of each: the read
+    already happened here regardless, so it is reported the same way any
+    other fully-enumerated (type, parentPath) is -- a `complete` partition
+    just sweeps nothing, since nothing of these types is ever stored."""
     unavailable: set[str] = set()
+    source_partitions: list[tuple[str, Partition]] = []
 
     def _items(type_name: str) -> list[dict]:
         resource = resources_by_type.get(type_name)
@@ -434,11 +454,15 @@ def _fetch_namespace_rollup_sources(
         items, reason = _list_best_effort(k8s, path)
         if reason is not None:
             unavailable.add(type_name)
+        if type_name in ROLLUP_SOURCE_TYPES:
+            status = reason or "complete"
+            count = len(items) if status == "complete" else 0
+            source_partitions.append((type_name, Partition(namespace=namespace, status=status, count=count)))
         return items
 
     # Built one namespace at a time; `build` keeps only compact rollup values,
     # so these raw lists are garbage the moment it returns.
-    return NamespaceRollupContext.build(
+    ctx = NamespaceRollupContext.build(
         namespace=namespace,
         pods=_items("pod"),
         replicasets=_items("replicaset"),
@@ -447,6 +471,7 @@ def _fetch_namespace_rollup_sources(
         events=_items("event"),
         unavailable_sources=unavailable,
     )
+    return ctx, source_partitions
 
 
 def _push_everything_else(
@@ -468,12 +493,15 @@ def _push_everything_else(
     resources_by_type: dict[str, ApiResource] = {}
     for r in resources:
         resources_by_type.setdefault(r.type_spec.type, r)
-    rollup_ctx_by_namespace = {
-        ns: _fetch_namespace_rollup_sources(k8s, resources_by_type, ns) for ns in in_scope_namespaces
-    }
-    for ns, ctx in rollup_ctx_by_namespace.items():
+    rollup_ctx_by_namespace: dict[str, NamespaceRollupContext] = {}
+    for ns in in_scope_namespaces:
+        ctx, source_partitions = _fetch_namespace_rollup_sources(k8s, resources_by_type, ns)
+        rollup_ctx_by_namespace[ns] = ctx
         if ctx.unavailable_sources:
             counters.rollup_sources_unavailable[ns] = sorted(ctx.unavailable_sources)
+        for type_name, partition in source_partitions:
+            counters.partitions.append(partition)
+            counters.partition_types.append(type_name)
 
     for resource in resources:
         type_name = resource.type_spec.type

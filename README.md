@@ -211,6 +211,13 @@ conflicts with an existing registration (a different parent or plural) comes bac
 registration; any item of that type is still rejected once pushed, failing only its own partition
 (`rwdiscovery/sync.py`'s existing rejected-item handling).
 
+The pack also carries an `access` block: `typeRead` (how this platform expresses "read type T" in
+its own native permission terms), a handful of named `permissions` that aren't a type read (reading
+the API server's own version), and `featureGroups` bundling related types/facets/dependency rules
+into the human-sized capabilities (workload health, service routing, RBAC, storage, ...) a customer
+sees on the platform's per-cluster Access view -- see `docs/platform-contract.md` §2 for the full
+shape and validation rules.
+
 ## Local development
 
 A capability author needs no cluster to develop against the SDK. `rwtask run` (from

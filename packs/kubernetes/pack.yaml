@@ -20,6 +20,134 @@ name: kubernetes
 version: "0.1.0"
 platform: kubernetes
 
+# access-phase1 contract §1: what "read type T" and every other permission
+# this capability needs look like in this platform's own terms, plus
+# optional, human-sized feature groups papi derives an Access view from
+# (needs = the reads of `types`, plus the needs of `facets` and `rules`).
+# `native` may only use the placeholders {type}/{plural}/{apiGroup}/
+# {apiVersion}/{kind}, substituted per type at read time -- this pack never
+# interprets the result. `tests/test_pack_yaml.py` checks every id/key/type
+# named here is actually declared by this pack.
+access:
+  typeRead:
+    native: {apiGroups: ["{apiGroup}"], resources: ["{plural}"], verbs: [get, list]}
+    required: [namespace]           # a run cannot proceed at all without this read
+    sensitive: [secret]             # left out of a generated least-privilege policy unless opted in (phase 3)
+  # Permissions that are not "read a type".
+  permissions:
+    - id: version
+      title: Read the API server version
+      description: Identifies the cluster and its version at the start of every run.
+      required: true
+      native: {nonResourceURLs: ["/version"], verbs: [get]}
+  featureGroups:
+    - id: workloads
+      title: Workload inventory
+      description: Deployments, StatefulSets, DaemonSets, CronJobs and Jobs, and their status conditions.
+      types: [deployment, statefulset, daemonset, cronjob, job]
+      facets: [k8sWorkload, k8sConditions]
+      rules: []
+
+    - id: workload-health
+      title: Workload health
+      description: Pod readiness, restarts and recent warning events for workloads.
+      types: [deployment, statefulset, daemonset]
+      facets: [k8sPods, k8sEvents]
+      rules: []
+
+    - id: service-routing
+      title: Service routing
+      description: How Services route to workloads, and how Ingresses route to Services.
+      types: [service, ingress, ingressclass]
+      facets: [k8sService, k8sServiceEndpoints, k8sIngress]
+      rules:
+        - k8s.service-routes-to-workload
+        - k8s.ingress-routes-to-service
+        - k8s.ingress-uses-tls-secret
+        - k8s.ingress-provisioned-by-ingressclass
+
+    - id: config-and-secrets
+      title: Configuration and secret references
+      description: Which ConfigMaps and Secrets a workload references.
+      types: [configmap, secret]
+      facets: [k8sConfigData]
+      rules:
+        - k8s.workload-uses-configmap
+        - k8s.cronjob-uses-configmap
+        - k8s.workload-uses-secret
+        - k8s.cronjob-uses-secret
+
+    - id: service-calls
+      title: Service-to-service calls
+      description: Which Services a workload calls by DNS name, inferred from its env, args and ConfigMaps.
+      types: [service, configmap]
+      facets: []
+      rules: [k8s.workload-calls-service-by-dns]
+
+    - id: rbac
+      title: Identity and RBAC
+      description: Which ServiceAccount a workload runs as, and what Roles or ClusterRoles authorize it.
+      types: [serviceaccount, role, rolebinding, clusterrole, clusterrolebinding]
+      facets: [k8sRbac]
+      rules:
+        - k8s.workload-runs-as-serviceaccount
+        - k8s.cronjob-runs-as-serviceaccount
+        - k8s.serviceaccount-authorized-by-rolebinding
+        - k8s.serviceaccount-authorized-by-binding-namespaced-subject
+        - k8s.binding-grants-role
+
+    - id: storage
+      title: Storage
+      description: Which PersistentVolumeClaims a workload mounts, and how they are bound and provisioned.
+      types: [persistentvolumeclaim, persistentvolume, storageclass]
+      facets: [k8sStorage]
+      rules:
+        - k8s.workload-mounts-pvc
+        - k8s.cronjob-mounts-pvc
+        - k8s.statefulset-volume-claim-template
+        - k8s.pvc-bound-to-pv
+        - k8s.pvc-provisioned-by-storageclass
+
+    - id: scaling
+      title: Autoscaling and disruption budgets
+      description: HorizontalPodAutoscalers and PodDisruptionBudgets and the workloads they target.
+      types: [horizontalpodautoscaler, poddisruptionbudget]
+      facets: [k8sAutoscaling]
+      rules: [k8s.hpa-scales-workload, k8s.pdb-protects-workload]
+
+    - id: network-policy
+      title: Network policies
+      description: NetworkPolicies and the workloads they govern.
+      types: [networkpolicy]
+      facets: []
+      rules: [k8s.networkpolicy-governs-workload]
+
+    - id: gitops
+      title: GitOps ownership
+      description: Which Flux Kustomization or HelmRelease, or Argo CD Application, manages a resource.
+      # CRD types this pack's static `types` doesn't declare -- a WARNING, not
+      # an error, since a per-cluster CRD may register them additively (§1).
+      types: [kustomization.kustomize.toolkit.fluxcd.io, helmrelease.helm.toolkit.fluxcd.io, application.argoproj.io]
+      facets: []
+      rules:
+        - k8s.managed-by-flux-kustomization
+        - k8s.managed-by-flux-helmrelease
+        - k8s.managed-by-argocd-application
+
+    - id: cluster
+      title: Cluster and nodes
+      description: Node inventory and cluster-level facts -- server version, distribution, installed API groups.
+      types: [node]
+      facets: [k8sNode, k8sCluster]
+      rules: []
+
+    - id: cronjob-history
+      title: CronJob run history
+      description: A CronJob's schedule and the outcomes of its most recent Jobs.
+      types: [cronjob, job]
+      facets: [k8sCronJob, k8sCronJobRuns]
+      rules: []
+
 facetDefinitions:
   # --- generic: apply to every kind, including CRDs nobody has seen ---
   - key: k8sSummary
@@ -113,7 +241,7 @@ facetDefinitions:
     title: Pods
     description: "Pods by phase, ready, restarts, last termination reasons, nodes, image IDs, oldest/newest."
     appliesTo: {platform: kubernetes, types: [deployment, statefulset, daemonset, job]}
-    populator: {kind: rollup}
+    populator: {kind: rollup, sources: [pod, replicaset]}
     volatility: state
     ttlSeconds: 1800
 
@@ -134,7 +262,7 @@ facetDefinitions:
     title: Service endpoints
     description: "Ready/not-ready endpoint counts from the Service's EndpointSlices."
     appliesTo: {platform: kubernetes, types: [service]}
-    populator: {kind: rollup}
+    populator: {kind: rollup, sources: [endpointslice]}
     volatility: state
     ttlSeconds: 900
 
@@ -249,7 +377,7 @@ facetDefinitions:
     title: CronJob recent runs
     description: "Last N Job outcomes owned by this CronJob."
     appliesTo: {platform: kubernetes, types: [cronjob]}
-    populator: {kind: rollup}
+    populator: {kind: rollup, sources: [job]}
     volatility: state
     ttlSeconds: 1800
 
@@ -257,7 +385,7 @@ facetDefinitions:
     title: Cluster
     description: "Server version, distribution, node count, installed API groups."
     appliesTo: {platform: kubernetes, types: [cluster]}
-    populator: {kind: rollup}
+    populator: {kind: rollup, sources: [node]}
     volatility: state
     ttlSeconds: 1800
 
@@ -265,7 +393,7 @@ facetDefinitions:
     title: Recent warning events
     description: "Warning events in the last 60 minutes; pod events attributed to the owning workload."
     appliesTo: {platform: kubernetes, types: ["*"]}
-    populator: {kind: rollup}
+    populator: {kind: rollup, sources: [event]}
     volatility: state
     ttlSeconds: 900
 

@@ -1128,3 +1128,75 @@ def test_summary_reports_which_rollup_sources_were_unavailable(tmp_path: Path):
 
     assert summary["rollupSourcesUnavailable"]["acme-payments"] == ["pod"]
     assert summary["rollupSourcesUnavailable"][""] == ["node"]
+
+
+def _partition(commit_body: dict, type_name: str, parent_path: str) -> dict:
+    return next(p for p in commit_body["partitions"] if p["type"] == type_name and p["parentPath"] == parent_path)
+
+
+@responses.activate
+def test_rollup_source_reads_reported_as_ordinary_commit_partitions(tmp_path: Path):
+    """access-phase1 contract §2: `pod`, `replicaset`, `endpointslice` and
+    `event` are read to feed rollups but never pushed as items -- their
+    per-namespace read is still reported as an ordinary commit partition
+    (status + count), exactly like any other fully-enumerated (type,
+    parentPath), even though a `complete` one here sweeps nothing (nothing
+    of these types is ever stored)."""
+    fake_papi = _FakePapi()
+    fake_papi.install()
+
+    _run(_build_fake_cluster(), tmp_path)
+
+    commit_body = fake_papi.commit_calls[0]
+    ns_path = "kubernetes/clusters/acme-prod-eu/namespaces/acme-payments"
+    assert _partition(commit_body, "pod", ns_path) == {
+        "type": "pod", "parentPath": ns_path, "status": "complete", "count": 2
+    }  # fmt: skip
+    assert _partition(commit_body, "replicaset", ns_path) == {
+        "type": "replicaset", "parentPath": ns_path, "status": "complete", "count": 1
+    }  # fmt: skip
+    assert _partition(commit_body, "endpointslice", ns_path) == {
+        "type": "endpointslice", "parentPath": ns_path, "status": "complete", "count": 1
+    }  # fmt: skip
+    assert _partition(commit_body, "event", ns_path) == {
+        "type": "event", "parentPath": ns_path, "status": "complete", "count": 1
+    }  # fmt: skip
+
+    # never pushed as items, complete partition or not
+    pushed_types = {i["identity"]["chain"][-1]["type"] for i in fake_papi.pushed_items}
+    assert pushed_types.isdisjoint({"pod", "replicaset", "endpointslice", "event"})
+
+
+@responses.activate
+def test_pods_forbidden_in_one_namespace_reports_a_forbidden_pod_partition_there_only(tmp_path: Path):
+    """A permissions gap on one rollup source, in one namespace, must not
+    make its partition look `complete` with nothing read, and must not
+    affect that same source's partition in a namespace where it IS
+    readable."""
+    fake_papi = _FakePapi()
+    fake_papi.install()
+    fake_k8s = _add_second_namespace(_build_fake_cluster())
+    fake_k8s.forbidden.add("/api/v1/namespaces/acme-batch/pods")
+
+    _run(fake_k8s, tmp_path)
+
+    commit_body = fake_papi.commit_calls[0]
+    batch_path = "kubernetes/clusters/acme-prod-eu/namespaces/acme-batch"
+    payments_path = "kubernetes/clusters/acme-prod-eu/namespaces/acme-payments"
+
+    batch_pod_partition = _partition(commit_body, "pod", batch_path)
+    assert batch_pod_partition["status"] == "forbidden"
+    assert "count" not in batch_pod_partition
+
+    # every other rollup source read in that same namespace stays complete
+    assert _partition(commit_body, "replicaset", batch_path)["status"] == "complete"
+    assert _partition(commit_body, "endpointslice", batch_path)["status"] == "complete"
+    assert _partition(commit_body, "event", batch_path)["status"] == "complete"
+
+    # the readable namespace's own pod partition is unaffected
+    payments_pod_partition = _partition(commit_body, "pod", payments_path)
+    assert payments_pod_partition["status"] == "complete"
+    assert payments_pod_partition["count"] == 2
+
+    pushed_types = {i["identity"]["chain"][-1]["type"] for i in fake_papi.pushed_items}
+    assert pushed_types.isdisjoint({"pod", "replicaset", "endpointslice", "event"})

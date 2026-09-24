@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+from datetime import UTC, datetime, timedelta
 
 from rwdiscovery.rollup_context import NamespaceRollupContext
 
@@ -53,6 +54,12 @@ def test_cronjob_rollup_by_owner_uid():
     assert result["k8sCronJobRuns"]["lastJobs"][0]["name"] == "acme-nightly-1"
 
 
+def _recent() -> str:
+    """A timestamp inside the events rollup's window, relative to the real clock
+    (a fixed date ages out of the window and turns these tests red)."""
+    return (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+
+
 def test_events_attributed_to_pods_reach_the_owning_workload():
     rs = {
         "metadata": {"uid": "rs-1", "ownerReferences": [{"kind": "Deployment", "uid": "deploy-1", "controller": True}]}
@@ -62,7 +69,7 @@ def test_events_attributed_to_pods_reach_the_owning_workload():
         "type": "Warning",
         "reason": "OOMKilling",
         "involvedObject": {"uid": "pod-api-1"},
-        "lastTimestamp": "2026-09-24T11:59:00+00:00",
+        "lastTimestamp": _recent(),
     }
     ctx = NamespaceRollupContext.build("acme-payments", pods, [rs], [], [], [event])
     result = ctx.rollups_for("deployment", "deploy-1", "api")
@@ -89,7 +96,7 @@ def test_pods_unavailable_omits_k8s_pods_but_keeps_direct_events():
         "type": "Warning",
         "reason": "FailedScale",
         "involvedObject": {"uid": "deploy-1"},
-        "lastTimestamp": "2026-09-24T11:59:00+00:00",
+        "lastTimestamp": _recent(),
     }
     ctx = NamespaceRollupContext.build("acme-payments", [], [], [], [], [event], unavailable_sources=["pod"])
     result = ctx.rollups_for("deployment", "deploy-1", "api")

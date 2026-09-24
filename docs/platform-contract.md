@@ -88,10 +88,13 @@ TypeSpec        {type, plural, parent: str | null, displayName, category?, ephem
                  nameCase: "lower" | "preserve", aliases: [str], native: {}}
 FacetDefinition {key, title, description, appliesTo: {platform, types: [str] | ["*"]},
                  populator: {kind: "projection" | "rollup" | "task" | "agent",
-                             expression?: str, expressionByType?: {type: str}, task?: {}},
+                             expression?: str, expressionByType?: {type: str}, sources?: [str], task?: {}},
                  schema?: JSONSchema, volatility: "config" | "state", ttlSeconds?: int}
 DependencyRule  {id, description, edgeType, from: {platform, types: [str]}, to: {platform, types: [str]},
                  strategy, params: {}, direction: "forward" | "reverse", confidence?: float}
+Access          {typeRead: {native: {}, required: [str], sensitive: [str]},
+                 permissions: [{id, title, description?, required: bool, native: {}}],
+                 featureGroups: [{id, title, description?, types: [str], facets: [str], rules: [str]}]}
 ```
 
 - `parent` names another type registered in the same platform, or is `null` for a root type (§1).
@@ -99,7 +102,25 @@ DependencyRule  {id, description, edgeType, from: {platform, types: [str]}, to: 
   sanitized `document` merged with its `status` (a projection can read either, or fields from
   both in the same expression). `expressionByType` overrides the generic `expression` for
   specific types -- the mechanism a CRD's own printer columns use to extend a generic facet like
-  `k8sSummary` without a bespoke facet per CRD.
+  `k8sSummary` without a bespoke facet per CRD. `populator.sources` -- allowed only when
+  `populator.kind == "rollup"` -- names the types a rollup is actually computed from (e.g.
+  `k8sPods: [pod, replicaset]`); a rollup source is a "read" need of the facet exactly like a
+  type read (used to derive per-facet access status, below).
+- An optional top-level **`access`** block (access-phase1 design) declares how this platform's own
+  credential model expresses "read type T" (`typeRead.native`, a template rendered per type by
+  substituting `{type}`/`{plural}`/`{apiGroup}`/`{apiVersion}`/`{kind}` from the type row -- papi
+  never interprets the result), any other named `permissions` that aren't a type read (e.g. reading
+  the API server's own version), and optional, human-sized `featureGroups` papi derives a
+  per-cluster Access view from. Validation (422 with every violation, same as the rest of pack
+  validation): `typeRead.native` and each permission's `native` must be a JSON object no more than
+  4 KB serialised, with no placeholder outside the five named above; `typeRead.required`,
+  `typeRead.sensitive` and every facet's `populator.sources` must name a type this pack's own
+  static `types` declares (an ERROR otherwise); a feature group's `types` may additionally name a
+  type only a per-cluster CRD registers additively -- a WARNING, not an error, riding back in a
+  new, optional `notes: [{kind: "access", ref, reason}]` list alongside the existing `skipped`
+  list; a feature group's `facets`/`rules` must be facet keys/rule ids this pack declares;
+  permission ids are unique among themselves, as are feature-group ids. A pack that omits `access`
+  registers exactly as before, with no access view.
 - Every edge a dependency rule produces reads **"`from` depends on `to`"**. `direction: reverse`
   swaps the two ends when the edge is actually emitted, so a rule can still be authored in the
   more natural "who points at whom" direction.
@@ -164,6 +185,12 @@ POST /resource-syncs/{syncId}/release              -> 200 (executes a held sync'
   readable" is a different claim than "confirmed to have zero members". `failed` and `excluded`
   are likewise never swept. A partition is never swept as `complete` if even one of its items was
   rejected on the way in, regardless of what the caller reports at commit time.
+- **Rollup source reads still report a partition.** A type `k8s-discovery` reads only to compute a
+  rollup facet value and never pushes as an item in its own right (`pod`, `replicaset`,
+  `endpointslice`, `event`, read once per in-scope namespace) is reported at commit exactly like
+  any other fully-enumerated `(type, parentPath)` -- the read already happened, so its outcome is
+  reported the same way; a `complete` one there simply sweeps nothing, since nothing of that type
+  is ever stored.
 - **Mark-and-sweep, with descendant cascade.** For each `complete` partition, the platform
   soft-deletes every active resource of that type, under that `parentPath`, within the sync's
   `scopePath`, that this sync did not touch. Soft-deleting a resource also soft-deletes every

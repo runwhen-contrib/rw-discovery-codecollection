@@ -246,7 +246,10 @@ def build_pack_payload(
 
     # The static part: identical for every cluster this pack is registered
     # against -- the digest (platform-contract §2) is computed over this dict
-    # alone, never the additive part below.
+    # alone, never the additive part below. `access` (access-phase1 contract
+    # §1) is optional and, like `facetDefinitions`/`dependencyRules`, carried
+    # through verbatim from pack.yaml -- it names only static types, facet
+    # keys and rule ids, so it never needs the additive treatment `types` does.
     body = {
         "name": pack["name"],
         "version": pack["version"],
@@ -255,6 +258,8 @@ def build_pack_payload(
         "facetDefinitions": facet_definitions,
         "dependencyRules": pack["dependencyRules"],
     }
+    if "access" in pack:
+        body["access"] = pack["access"]
     return {
         **body,
         "digest": compute_digest(body),

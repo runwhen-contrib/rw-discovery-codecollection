@@ -1,16 +1,20 @@
 """Validates packs/kubernetes/pack.yaml against platform-contract §2:
 every JMESPath expression compiles, every strategy/edgeType is in the
 closed vocabulary, and packbuild.py's generated `types` covers every
-builtin kind."""
+builtin kind. Also validates the pack's `access` block against
+access-phase1 contract §1 -- the same rules papi's own pack validation
+enforces at registration time."""
 
 from __future__ import annotations
 
+import json
 import re
 
 import jmespath
 import pytest
 
 from rwdiscovery.chain import BUILTIN_TYPES, CLUSTER, NAMESPACE, resolve_type
+from rwdiscovery.discover import CLUSTER_ROLLUP_REQUIRED_SOURCES
 from rwdiscovery.enumerate import ApiResource
 from rwdiscovery.packbuild import (
     build_crd_summary_expression,
@@ -21,6 +25,7 @@ from rwdiscovery.packbuild import (
     extra_discovered_type_specs,
     load_pack_yaml,
 )
+from rwdiscovery.rollup_context import ROLLUP_FACET_REQUIRED_SOURCES
 
 # platform-contract §2's closed strategy/edgeType vocabulary.
 VALID_STRATEGIES = {"reference", "owner_reference", "label_selector", "field_join", "path_template", "dns_reference"}
@@ -31,6 +36,22 @@ VALID_EDGE_TYPES = {
 }  # fmt: skip
 VALID_VOLATILITY = {"config", "state"}
 VALID_POPULATOR_KINDS = {"projection", "rollup", "task", "agent"}
+
+# access-phase1 contract §1: the only placeholders `access.typeRead.native` /
+# `access.permissions[].native` may use -- papi substitutes them per type at
+# read time and never interprets the result otherwise.
+ALLOWED_NATIVE_PLACEHOLDERS = {"type", "plural", "apiGroup", "apiVersion", "kind"}
+_PLACEHOLDER_RE = re.compile(r"\{([^{}]*)\}")
+MAX_NATIVE_BYTES = 4096
+
+
+def _placeholders_in(native: dict) -> set[str]:
+    found: set[str] = set()
+    for value in native.values():
+        for item in value if isinstance(value, list) else [value]:
+            if isinstance(item, str):
+                found.update(_PLACEHOLDER_RE.findall(item))
+    return found
 
 
 @pytest.fixture(scope="module")
@@ -96,7 +117,7 @@ def test_builtin_type_specs_cover_the_two_roots_and_every_builtin_kind():
     assert {s.type for s in BUILTIN_TYPES.values()} <= names
 
 
-_STATIC_KEYS = ("name", "version", "platform", "types", "facetDefinitions", "dependencyRules")
+_STATIC_KEYS = ("name", "version", "platform", "types", "facetDefinitions", "dependencyRules", "access")
 
 
 def test_build_pack_payload_shape_and_digest_stability():
@@ -358,3 +379,84 @@ def test_build_pack_payload_puts_crd_summaries_in_an_additive_k8s_summary_facet(
 def test_build_pack_payload_has_no_additive_facet_when_no_crds_discovered():
     payload = build_pack_payload()
     assert payload["additiveFacetDefinitions"] == []
+
+
+# --- access-phase1 contract §1: the pack's `access` block -------------------
+
+
+def test_access_native_placeholders_are_from_the_closed_set(pack):
+    access = pack["access"]
+    natives = [access["typeRead"]["native"], *(p["native"] for p in access["permissions"])]
+    for native in natives:
+        assert _placeholders_in(native) <= ALLOWED_NATIVE_PLACEHOLDERS, native
+
+
+def test_access_native_is_at_most_4kb_serialised(pack):
+    access = pack["access"]
+    natives = [access["typeRead"]["native"], *(p["native"] for p in access["permissions"])]
+    for native in natives:
+        assert len(json.dumps(native).encode()) <= MAX_NATIVE_BYTES, native
+
+
+def test_access_typeread_required_and_sensitive_name_declared_static_types(pack):
+    static_type_names = {s.type for s in builtin_type_specs()}
+    type_read = pack["access"]["typeRead"]
+    assert set(type_read["required"]) <= static_type_names
+    assert set(type_read["sensitive"]) <= static_type_names
+
+
+def test_populator_sources_name_declared_static_types(pack):
+    static_type_names = {s.type for s in builtin_type_specs()}
+    for facet in pack["facetDefinitions"]:
+        sources = facet["populator"].get("sources")
+        if sources:
+            assert set(sources) <= static_type_names, facet["key"]
+
+
+def test_populator_sources_only_declared_on_rollup_facets(pack):
+    for facet in pack["facetDefinitions"]:
+        if facet["populator"].get("sources"):
+            assert facet["populator"]["kind"] == "rollup", facet["key"]
+
+
+def test_pack_populator_sources_match_rollup_context_required_sources(pack):
+    """`rwdiscovery/rollup_context.py`'s `ROLLUP_FACET_REQUIRED_SOURCES`
+    (plus `discover.py`'s cluster-scoped counterpart,
+    `CLUSTER_ROLLUP_REQUIRED_SOURCES`) is the single source of truth for
+    which rollup facet needs which source collection to have actually been
+    read this run before the facet is trustworthy -- this pack's
+    `populator.sources` must say exactly the same thing, or the two silently
+    drift apart."""
+    expected = {**ROLLUP_FACET_REQUIRED_SOURCES, **CLUSTER_ROLLUP_REQUIRED_SOURCES}
+    facets_by_key = {f["key"]: f for f in pack["facetDefinitions"]}
+    rollup_facet_keys = {f["key"] for f in pack["facetDefinitions"] if f["populator"]["kind"] == "rollup"}
+    assert set(expected) == rollup_facet_keys
+    for key, sources in expected.items():
+        assert tuple(facets_by_key[key]["populator"]["sources"]) == sources, key
+
+
+def test_feature_group_facets_and_rules_are_declared_by_this_pack(pack):
+    facet_keys = {f["key"] for f in pack["facetDefinitions"]}
+    rule_ids = {r["id"] for r in pack["dependencyRules"]}
+    for group in pack["access"]["featureGroups"]:
+        assert set(group["facets"]) <= facet_keys, group["id"]
+        assert set(group["rules"]) <= rule_ids, group["id"]
+
+
+def test_access_permission_and_feature_group_ids_are_each_unique(pack):
+    access = pack["access"]
+    permission_ids = [p["id"] for p in access["permissions"]]
+    assert len(permission_ids) == len(set(permission_ids))
+    feature_group_ids = [g["id"] for g in access["featureGroups"]]
+    assert len(feature_group_ids) == len(set(feature_group_ids))
+
+
+def test_build_pack_payload_carries_access_and_populator_sources(pack):
+    """packbuild.py's static `body` explicitly lists its keys -- `access`
+    (optional, additive-part-free) must be one of them, or it would be
+    silently dropped from both the registration payload and the digest that
+    covers the static part (platform-contract §2)."""
+    payload = build_pack_payload()
+    assert payload["access"] == pack["access"]
+    k8s_pods_facet = next(f for f in payload["facetDefinitions"] if f["key"] == "k8sPods")
+    assert k8s_pods_facet["populator"]["sources"] == ["pod", "replicaset"]

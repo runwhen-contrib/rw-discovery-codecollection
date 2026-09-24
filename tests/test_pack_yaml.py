@@ -5,6 +5,8 @@ builtin kind."""
 
 from __future__ import annotations
 
+import re
+
 import jmespath
 import pytest
 
@@ -65,6 +67,15 @@ def test_every_dependency_rule_jmespath_param_compiles(pack):
         for name, value in rule.get("params", {}).items():
             if name in jmespath_param_names and isinstance(value, str):
                 jmespath.compile(value)
+
+
+def test_dns_rule_host_keys_match_host_settings_only(pack):
+    rule = next(r for r in pack["dependencyRules"] if r["id"] == "k8s.workload-calls-service-by-dns")
+    host_keys = re.compile(rule["params"]["hostKeys"])
+    for key in ("DATABASE_HOST", "REDIS_HOST", "host", "DB_ADDR", "SMTP_SERVER", "API_ENDPOINT", "PG_HOSTNAME"):
+        assert host_keys.search(key), key
+    for key in ("DATABASE_NAME", "FASTAPI_SERVICE", "OTEL_SERVICE_NAME", "GHOST_MODE", "HOSTS_FILE"):
+        assert not host_keys.search(key), key
 
 
 def test_dependency_rule_ids_are_unique(pack):

@@ -691,6 +691,12 @@ dependencyRules:
     from: {platform: kubernetes, types: [deployment, statefulset, daemonset, cronjob, job]}
     to: {platform: kubernetes, types: [service]}
     strategy: dns_reference
-    params: {sources: [env, args, configMaps], confidence: 0.6}
+    # hostKeys: an env var / ConfigMap key named like a host setting whose whole
+    # value is a bare `service` or `service.namespace` (DATABASE_HOST=pgbouncer)
+    # also counts -- without it only FQDNs, URLs and host:port are recognised.
+    params:
+      sources: [env, args, configMaps]
+      confidence: 0.6
+      hostKeys: "(?i)(^|_)(HOST|HOSTNAME|ADDR|ADDRESS|SERVER|ENDPOINT)$"
     direction: forward
     confidence: 0.6

@@ -45,6 +45,15 @@ CRD_LIST_PATH = "/apis/apiextensions.k8s.io/v1/customresourcedefinitions"
 NODES_PATH = "/api/v1/nodes"
 API_GROUPS_PATH = "/apis"
 
+# The summary's `rollupSourcesUnavailable` key for sources read once per
+# cluster (currently just `node`, for `k8sCluster`) rather than once per
+# namespace -- every other key in that map is a namespace name.
+CLUSTER_SCOPE_KEY = ""
+# Bounded so a cluster with many forbidden namespaces can't bloat the
+# summary envelope; sorted so which namespaces survive the cap is at least
+# deterministic.
+MAX_ROLLUP_SOURCES_UNAVAILABLE_ENTRIES = 50
+
 
 def scope_path_for(cluster_name: str) -> str:
     return f"kubernetes/clusters/{cluster_name}"
@@ -82,21 +91,32 @@ def _build_item(
     return item
 
 
-def _list_best_effort(k8s: K8sClient, path: str, project: Callable[[dict], dict] | None = None) -> list[dict]:
+def _list_best_effort(
+    k8s: K8sClient, path: str, project: Callable[[dict], dict] | None = None
+) -> tuple[list[dict], str | None]:
     """Used for auxiliary, non-authoritative reads (CRDs for pretty
     printer-column facets, rollup source collections): a 403/error here
     degrades gracefully rather than failing the whole run, since none of
     these feed the sync's own partitions/sweep. Follows `continue` tokens
     (a single `limit=500` page silently truncated rollups and dropped every
     CRD past the 500th from the pack). `project` shrinks each item as its
-    page arrives, so only what the caller needs is ever held."""
+    page arrives, so only what the caller needs is ever held.
+
+    Returns `(items, unavailable)`: `unavailable` is `None` on success, or
+    `"forbidden"`/`"failed"` when the listing itself couldn't be read --
+    callers that feed a rollup (unlike CRD listing, whose only use is the
+    additive pack's printer-column summaries) must tell it apart from a
+    genuine empty list, since a rollup built from `[]` here would otherwise
+    be indistinguishable from a confirmed zero (see `rollup_context.py`)."""
     items: list[dict] = []
     try:
         for page in iter_pages(k8s, path):
             items.extend(map(project, page) if project else page)
-    except (ForbiddenError, ApiError):
-        return []
-    return items
+    except ForbiddenError:
+        return [], "forbidden"
+    except ApiError:
+        return [], "failed"
+    return items, None
 
 
 def _crd_essentials(crd: dict) -> dict:
@@ -119,6 +139,10 @@ def _crd_essentials(crd: dict) -> dict:
 class _Counters:
     partitions: list[Partition] = field(default_factory=list)
     partition_types: list[str] = field(default_factory=list)  # parallel to `partitions`
+    # Namespace name (or `CLUSTER_SCOPE_KEY` for the cluster-scoped `node`
+    # source) -> the rollup source types that were unavailable there this
+    # run -- feeds the summary's `rollupSourcesUnavailable`.
+    rollup_sources_unavailable: dict[str, list[str]] = field(default_factory=dict)
 
 
 def run_discover(
@@ -151,7 +175,7 @@ def run_discover(
 
     sync_client = SyncClient(credential=ResourceSyncCredential.parse(resource_sync_raw))
 
-    crds = _list_best_effort(k8s, CRD_LIST_PATH, project=_crd_essentials)
+    crds, _crds_unavailable = _list_best_effort(k8s, CRD_LIST_PATH, project=_crd_essentials)
     # One discovery sweep, reused for both pack registration (every listable
     # type needs a registered TypeSpec, not just builtins + CRDs -- see
     # packbuild.extra_discovered_type_specs) and the item push below.
@@ -225,7 +249,17 @@ def run_discover(
         "durationMs": duration_ms,
         "serverVersion": server_version,
         "clusterUid": cluster_uid,
+        "rollupSourcesUnavailable": _capped_rollup_sources_unavailable(counters.rollup_sources_unavailable),
     }
+
+
+def _capped_rollup_sources_unavailable(by_scope: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Bounds the summary's `rollupSourcesUnavailable` (namespace name, or
+    `CLUSTER_SCOPE_KEY` for the cluster scope -> unavailable source types)
+    so a cluster with many forbidden namespaces can't bloat the envelope."""
+    if len(by_scope) <= MAX_ROLLUP_SOURCES_UNAVAILABLE_ENTRIES:
+        return by_scope
+    return dict(sorted(by_scope.items())[:MAX_ROLLUP_SOURCES_UNAVAILABLE_ENTRIES])
 
 
 def _partition_parent_path(cluster_name: str, partition: Partition) -> str:
@@ -308,12 +342,14 @@ def _push_cluster_and_namespaces(
 ) -> None:
     # --- cluster item, first (platform-contract §5: push order cluster -> namespaces -> rest) ---
     # The k8sCluster rollup reads only the node count and node labels.
-    nodes = _list_best_effort(
+    nodes, nodes_unavailable = _list_best_effort(
         k8s, NODES_PATH, project=lambda n: {"metadata": {"labels": (n.get("metadata") or {}).get("labels") or {}}}
     )
+    if nodes_unavailable is not None:
+        counters.rollup_sources_unavailable[CLUSTER_SCOPE_KEY] = ["node"]
     api_groups = [g["name"] for g in k8s.get_raw(API_GROUPS_PATH).get("groups", [])]
     cluster_obj = {"apiVersion": "v1", "kind": "Cluster", "metadata": {"name": cluster_name, "uid": cluster_uid}}
-    cluster_rollups = {"k8sCluster": k8s_cluster_rollup(version_info, nodes, api_groups)}
+    cluster_rollups = {"k8sCluster": k8s_cluster_rollup(version_info, None if nodes_unavailable else nodes, api_groups)}
     pusher.add(_build_item(cluster_name, cluster_chain(cluster_name), cluster_obj, sanitize_options, cluster_rollups))
 
     # --- namespaces ---
@@ -388,12 +424,17 @@ def _get_namespace_or_stub(k8s: K8sClient, name: str) -> dict:
 def _fetch_namespace_rollup_sources(
     k8s: K8sClient, resources_by_type: dict[str, ApiResource], namespace: str
 ) -> NamespaceRollupContext:
+    unavailable: set[str] = set()
+
     def _items(type_name: str) -> list[dict]:
         resource = resources_by_type.get(type_name)
         if resource is None:
-            return []
+            return []  # the type isn't served at all -- a structural fact, not a permissions gap
         path = api_resource_path(resource.group, resource.version, resource.plural, namespace=namespace)
-        return _list_best_effort(k8s, path)
+        items, reason = _list_best_effort(k8s, path)
+        if reason is not None:
+            unavailable.add(type_name)
+        return items
 
     # Built one namespace at a time; `build` keeps only compact rollup values,
     # so these raw lists are garbage the moment it returns.
@@ -404,6 +445,7 @@ def _fetch_namespace_rollup_sources(
         endpointslices=_items("endpointslice"),
         jobs=_items("job"),
         events=_items("event"),
+        unavailable_sources=unavailable,
     )
 
 
@@ -429,6 +471,9 @@ def _push_everything_else(
     rollup_ctx_by_namespace = {
         ns: _fetch_namespace_rollup_sources(k8s, resources_by_type, ns) for ns in in_scope_namespaces
     }
+    for ns, ctx in rollup_ctx_by_namespace.items():
+        if ctx.unavailable_sources:
+            counters.rollup_sources_unavailable[ns] = sorted(ctx.unavailable_sources)
 
     for resource in resources:
         type_name = resource.type_spec.type

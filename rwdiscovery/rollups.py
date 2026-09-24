@@ -264,13 +264,20 @@ def _infer_distribution(git_version: str, nodes: list[dict]) -> str:
     return "unknown"
 
 
-def k8s_cluster_rollup(version_info: dict, nodes: list[dict], api_groups: list[str]) -> dict:
+def k8s_cluster_rollup(version_info: dict, nodes: list[dict] | None, api_groups: list[str]) -> dict:
     """`server version, distribution (EKS/GKE/AKS/OpenShift), node count,
-    installed API groups`."""
+    installed API groups`. `nodes=None` means the Node listing itself was
+    unavailable (403/error), not that the cluster genuinely has none --
+    `nodeCount` is then omitted rather than reported as a false zero, and
+    distribution inference falls back to the version-string markers alone
+    (skipping the node-label fallback, which needs nodes read) rather than
+    guessing from an absence that isn't real."""
     git_version = version_info.get("gitVersion", "")
-    return {
+    rollup = {
         "serverVersion": git_version,
-        "distribution": _infer_distribution(git_version, nodes),
-        "nodeCount": len(nodes),
+        "distribution": _infer_distribution(git_version, nodes or []),
         "apiGroups": sorted(api_groups),
     }
+    if nodes is not None:
+        rollup["nodeCount"] = len(nodes)
+    return rollup

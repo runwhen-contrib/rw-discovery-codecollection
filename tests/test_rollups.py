@@ -194,6 +194,24 @@ def test_k8s_cluster_rollup_unknown_distribution():
     assert rollup["distribution"] == "unknown"
 
 
+def test_k8s_cluster_rollup_omits_node_count_when_nodes_unavailable():
+    """`nodes=None` means the Node listing itself 403'd/errored -- `nodeCount`
+    must never be reported as a false zero. `distribution` and the rest stay
+    (they don't depend on having read any nodes), falling back to the
+    version-string markers alone rather than the node-label inference."""
+    rollup = k8s_cluster_rollup({"gitVersion": "v1.29.4-gke.1043004"}, nodes=None, api_groups=["apps", "batch"])
+    assert "nodeCount" not in rollup
+    assert rollup["distribution"] == "gke"
+    assert rollup["serverVersion"] == "v1.29.4-gke.1043004"
+    assert rollup["apiGroups"] == ["apps", "batch"]
+
+
+def test_k8s_cluster_rollup_unknown_distribution_when_nodes_unavailable_and_version_is_generic():
+    rollup = k8s_cluster_rollup({"gitVersion": "v1.29.4"}, nodes=None, api_groups=[])
+    assert rollup["distribution"] == "unknown"
+    assert "nodeCount" not in rollup
+
+
 def test_k8s_events_rollup_masks_credentials_before_truncating_the_message():
     """Masking after the 300-char cut would leave a DSN's '@' outside the
     window, so the password prefix inside it would no longer match."""

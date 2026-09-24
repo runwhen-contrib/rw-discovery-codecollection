@@ -232,12 +232,19 @@ outputs. `k8s-discovery` declares three:
   be reached, the whole request fails here, before `discover` or `inspect` ever starts.
 - **`discover`** -- inputs `{clusterName, namespaces?, excludeNamespaces?, configMapValues?,
   overlay?}`; output `summary` (kind `rw.discovery_summary.v1`):
-  `{syncId, packDigest, counts, partitions, durationMs, serverVersion, clusterUid}`. No bulk data
-  ever rides this output -- every discovered resource goes straight to the platform through the
-  sync protocol (§3); this result is only the run's own accounting. It registers the type/facet/
-  rule pack (§2), opens a sync (§3), pushes items with every ancestor pushed before its children,
-  and commits with one partition per `(type, parentPath)` it actually attempted to enumerate. Any
-  failure once the sync is open aborts it, rather than leaving it to expire on its own lease.
+  `{syncId, packDigest, counts, partitions, durationMs, serverVersion, clusterUid,
+  rollupSourcesUnavailable}`. No bulk data ever rides this output -- every discovered resource goes
+  straight to the platform through the sync protocol (§3); this result is only the run's own
+  accounting. It registers the type/facet/rule pack (§2), opens a sync (§3), pushes items with
+  every ancestor pushed before its children, and commits with one partition per `(type,
+  parentPath)` it actually attempted to enumerate. Any failure once the sync is open aborts it,
+  rather than leaving it to expire on its own lease. `rollupSourcesUnavailable` maps a namespace
+  name (or `""`, the cluster scope) to which of the ephemeral, rollup-only source collections
+  (pods, ReplicaSets, EndpointSlices, Events) plus Jobs and Nodes (both stored resources in their
+  own right, but also read once more here to compute a rollup) came back forbidden or failed this
+  run; a rollup facet whose sources are listed there was omitted from every item it would have
+  applied to, rather than pushed with a false empty or zero count (the platform keeps the last
+  value it had and ages it into `stale` by the facet's own TTL instead).
 - **`inspect`** -- inputs `{clusterName, kind, name, namespace?, apiVersion?, mode: "get" |
   "describe"}`; output `object` (kind `rw.k8s_object.v1`): `{path, found, object?, describe?,
   events?}`. Declared `readOnly: true` in the manifest: it never writes to the platform's

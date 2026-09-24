@@ -47,7 +47,11 @@ interface spelled out precisely.
    resources -- but pods, ReplicaSets, EndpointSlices and events are still read, to compute
    **rollups** (pod counts/restarts, service endpoint readiness, CronJob's recent runs, cluster
    version/distribution) attached to the resources they belong to. A standalone Job is stored; a
-   Job owned by a CronJob is not, since a CronJob recreates it on every schedule.
+   Job owned by a CronJob is not, since a CronJob recreates it on every schedule. A `403`/error
+   reading one of these rollup sources (pods, ReplicaSets, EndpointSlices, Jobs, events, Nodes) is
+   never treated as "zero of that" -- a rollup facet whose sources aren't all readable is omitted
+   from every item it would apply to, rather than pushed with a false empty/zero value; the summary
+   (below) reports which sources were unavailable, per namespace.
 5. Commits the sync with one partition per `(type, parentPath)` listed, so papi can safely sweep
    only what was actually observed as complete -- a `403` on a type/namespace is reported
    `forbidden`, never silently treated as "zero of that type"; a rejected item (an unknown type, a
@@ -58,8 +62,9 @@ interface spelled out precisely.
    still gets pushed as a stub (identity only, a marker annotation) so its children have a parent;
    the namespace partition is reported `forbidden` either way.
 6. Returns a summary (`rw.discovery_summary.v1`): sync id, pack digest, counts, partition status
-   breakdown, duration, server version, cluster UID. **No bulk data returns through the
-   capability's own result** -- everything else goes straight to papi through the sync API.
+   breakdown, duration, server version, cluster UID, and which rollup sources (if any) were
+   unavailable, keyed by namespace (`""` for the cluster scope). **No bulk data returns through
+   the capability's own result** -- everything else goes straight to papi through the sync API.
 
 Any failure after the sync is opened aborts it, rather than leaving it to expire on its own lease.
 

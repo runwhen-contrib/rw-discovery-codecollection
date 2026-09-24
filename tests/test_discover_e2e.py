@@ -937,3 +937,194 @@ def test_a_namespace_scoped_credential_that_cannot_read_kube_system_still_discov
     cluster_item = fake_papi.item_by_type_and_name("cluster", "acme-prod-eu")
     assert "providerUid" not in cluster_item
     assert fake_papi.item_by_type_and_name("deployment", "acme-api") is not None
+
+
+def _add_second_namespace(fake: FakeK8sClient, namespace: str = "acme-batch") -> FakeK8sClient:
+    """A second, fully-readable namespace with its own Deployment and the
+    rollup sources for it, so a test can 403 one specific rollup source in
+    ONE namespace and prove the other namespace's rollups are unaffected."""
+    fake.single["/api/v1/namespaces"]["items"].append({"metadata": {"name": namespace, "uid": f"{namespace}-uid"}})
+    fake.pages["/apis/apps/v1/deployments"][0]["items"].append(
+        {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {"name": "acme-worker", "namespace": namespace, "uid": "deploy-uid-2"},
+            "spec": {"replicas": 1, "selector": {"matchLabels": {"app": "acme-worker"}}},
+            "status": {"replicas": 1, "readyReplicas": 1},
+        }
+    )
+    fake.pages[f"/api/v1/namespaces/{namespace}/pods"] = [
+        {
+            "items": [
+                {
+                    "apiVersion": "v1",
+                    "kind": "Pod",
+                    "metadata": {
+                        "name": "acme-worker-aaaa",
+                        "namespace": namespace,
+                        "uid": "pod-uid-worker-1",
+                        "ownerReferences": [{"kind": "ReplicaSet", "uid": "rs-uid-worker", "controller": True}],
+                    },
+                    "spec": {"nodeName": "acme-node-1"},
+                    "status": {
+                        "phase": "Running",
+                        "conditions": [{"type": "Ready", "status": "True"}],
+                        "containerStatuses": [{"restartCount": 0}],
+                    },
+                }
+            ]
+        }
+    ]
+    fake.pages[f"/apis/apps/v1/namespaces/{namespace}/replicasets"] = [
+        {
+            "items": [
+                {
+                    "apiVersion": "apps/v1",
+                    "kind": "ReplicaSet",
+                    "metadata": {
+                        "name": "acme-worker-aaaa",
+                        "namespace": namespace,
+                        "uid": "rs-uid-worker",
+                        "ownerReferences": [
+                            {"kind": "Deployment", "name": "acme-worker", "uid": "deploy-uid-2", "controller": True}
+                        ],
+                    },
+                }
+            ]
+        }
+    ]
+    fake.pages[f"/apis/discovery.k8s.io/v1/namespaces/{namespace}/endpointslices"] = [{"items": []}]
+    fake.pages[f"/apis/batch/v1/namespaces/{namespace}/jobs"] = [{"items": []}]
+    fake.pages[f"/api/v1/namespaces/{namespace}/events"] = [{"items": []}]
+    return fake
+
+
+@responses.activate
+def test_pods_forbidden_in_one_namespace_omits_k8s_pods_there_but_not_in_a_readable_namespace(tmp_path: Path):
+    """A credential that can list Deployments but not Pods in a given
+    namespace must not make every workload there look like it has zero
+    pods -- and must not affect a namespace where pods ARE readable."""
+    fake_papi = _FakePapi()
+    fake_papi.install()
+    fake_k8s = _add_second_namespace(_build_fake_cluster())
+    fake_k8s.forbidden.add("/api/v1/namespaces/acme-batch/pods")
+
+    _run(fake_k8s, tmp_path)
+
+    worker_item = fake_papi.item_by_type_and_name("deployment", "acme-worker")
+    assert "k8sPods" not in worker_item["rollups"]
+
+    api_item = fake_papi.item_by_type_and_name("deployment", "acme-api")
+    assert api_item["rollups"]["k8sPods"]["count"] == 2
+
+
+@responses.activate
+def test_replicasets_forbidden_omits_k8s_pods(tmp_path: Path):
+    fake_papi = _FakePapi()
+    fake_papi.install()
+    fake_k8s = _build_fake_cluster()
+    fake_k8s.forbidden.add("/apis/apps/v1/namespaces/acme-payments/replicasets")
+
+    _run(fake_k8s, tmp_path)
+
+    deployment_item = fake_papi.item_by_type_and_name("deployment", "acme-api")
+    assert "k8sPods" not in deployment_item["rollups"]
+
+
+@responses.activate
+def test_events_forbidden_omits_k8s_events(tmp_path: Path):
+    fake_papi = _FakePapi()
+    fake_papi.install()
+    fake_k8s = _build_fake_cluster()
+    fake_k8s.forbidden.add("/api/v1/namespaces/acme-payments/events")
+
+    _run(fake_k8s, tmp_path)
+
+    deployment_item = fake_papi.item_by_type_and_name("deployment", "acme-api")
+    assert "k8sEvents" not in deployment_item["rollups"]
+
+
+@responses.activate
+def test_pods_forbidden_but_events_readable_keeps_direct_events(tmp_path: Path):
+    """A workload's own events (as opposed to its pods') don't need the pod
+    listing -- k8sEvents stays, carrying only what it can still prove."""
+    fake_papi = _FakePapi()
+    fake_papi.install()
+    fake_k8s = _build_fake_cluster()
+    fake_k8s.pages["/api/v1/namespaces/acme-payments/events"][0]["items"].append(
+        {
+            "type": "Warning",
+            "reason": "FailedScale",
+            "message": "forbid scaling",
+            "involvedObject": {"kind": "Deployment", "uid": "deploy-uid-1", "name": "acme-api"},
+            "lastTimestamp": _now_iso(),
+        }
+    )
+    fake_k8s.forbidden.add("/api/v1/namespaces/acme-payments/pods")
+
+    _run(fake_k8s, tmp_path)
+
+    deployment_item = fake_papi.item_by_type_and_name("deployment", "acme-api")
+    assert "k8sPods" not in deployment_item["rollups"]
+    reasons = {w["reason"] for w in deployment_item["rollups"]["k8sEvents"]["warnings"]}
+    assert "FailedScale" in reasons
+    assert "BackOff" not in reasons  # pod-attributed; can't be attributed without reading pods
+
+
+@responses.activate
+def test_endpointslices_forbidden_omits_k8s_service_endpoints(tmp_path: Path):
+    fake_papi = _FakePapi()
+    fake_papi.install()
+    fake_k8s = _build_fake_cluster()
+    fake_k8s.forbidden.add("/apis/discovery.k8s.io/v1/namespaces/acme-payments/endpointslices")
+
+    _run(fake_k8s, tmp_path)
+
+    service_item = fake_papi.item_by_type_and_name("service", "acme-api")
+    assert "k8sServiceEndpoints" not in service_item["rollups"]
+
+
+@responses.activate
+def test_nodes_forbidden_omits_node_count_but_keeps_the_rest_of_k8s_cluster(tmp_path: Path):
+    fake_papi = _FakePapi()
+    fake_papi.install()
+    fake_k8s = _build_fake_cluster()
+    fake_k8s.forbidden.add("/api/v1/nodes")
+
+    summary = _run(fake_k8s, tmp_path)
+
+    cluster_item = fake_papi.item_by_type_and_name("cluster", "acme-prod-eu")
+    assert "nodeCount" not in cluster_item["rollups"]["k8sCluster"]
+    assert cluster_item["rollups"]["k8sCluster"]["serverVersion"] == "v1.29.4-gke.1043004"
+    assert cluster_item["rollups"]["k8sCluster"]["distribution"] == "gke"  # inferred from gitVersion alone
+    assert summary["rollupSourcesUnavailable"][""] == ["node"]
+
+
+@responses.activate
+def test_a_real_empty_namespace_still_gets_a_true_zero_pod_count(tmp_path: Path):
+    """Every rollup source is actually readable and genuinely empty here --
+    that's a real fact, not a permissions gap, and must still be reported."""
+    fake_papi = _FakePapi()
+    fake_papi.install()
+    fake_k8s = _add_second_namespace(_build_fake_cluster())
+    fake_k8s.pages["/api/v1/namespaces/acme-batch/pods"] = [{"items": []}]
+    fake_k8s.pages["/apis/apps/v1/namespaces/acme-batch/replicasets"] = [{"items": []}]
+
+    _run(fake_k8s, tmp_path)
+
+    worker_item = fake_papi.item_by_type_and_name("deployment", "acme-worker")
+    assert worker_item["rollups"]["k8sPods"]["count"] == 0
+
+
+@responses.activate
+def test_summary_reports_which_rollup_sources_were_unavailable(tmp_path: Path):
+    fake_papi = _FakePapi()
+    fake_papi.install()
+    fake_k8s = _build_fake_cluster()
+    fake_k8s.forbidden.add("/api/v1/namespaces/acme-payments/pods")
+    fake_k8s.forbidden.add("/api/v1/nodes")
+
+    summary = _run(fake_k8s, tmp_path)
+
+    assert summary["rollupSourcesUnavailable"]["acme-payments"] == ["pod"]
+    assert summary["rollupSourcesUnavailable"][""] == ["node"]

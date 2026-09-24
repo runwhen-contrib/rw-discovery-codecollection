@@ -28,7 +28,14 @@ class DiscoveryPartitionCounts(BaseModel):
 class DiscoverySummary(BaseModel):
     """Output of the `discover` task -- `rw.discovery_summary.v1`. Bulk
     data never rides this envelope (it goes straight to papi through the
-    sync API, platform-contract §3); this is only the run's own summary."""
+    sync API, platform-contract §3); this is only the run's own summary.
+
+    `rollupSourcesUnavailable` maps a namespace name (or the cluster scope,
+    key `""`) to the rollup source collections (`pod`, `replicaset`,
+    `endpointslice`, `job`, `event`, `node`) that came back forbidden/failed
+    this run -- any rollup facet needing one of them was omitted rather than
+    reported with a false empty/zero. Capped so a cluster with many
+    forbidden namespaces can't bloat this envelope."""
 
     syncId: str
     packDigest: str
@@ -37,6 +44,7 @@ class DiscoverySummary(BaseModel):
     durationMs: int
     serverVersion: str
     clusterUid: str
+    rollupSourcesUnavailable: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class K8sObjectResult(BaseModel):

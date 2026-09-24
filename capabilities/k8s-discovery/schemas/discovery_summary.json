@@ -53,7 +53,7 @@
       "type": "object"
     }
   },
-  "description": "Output of the `discover` task -- `rw.discovery_summary.v1`. Bulk\ndata never rides this envelope (it goes straight to papi through the\nsync API, platform-contract \u00a73); this is only the run's own summary.",
+  "description": "Output of the `discover` task -- `rw.discovery_summary.v1`. Bulk\ndata never rides this envelope (it goes straight to papi through the\nsync API, platform-contract \u00a73); this is only the run's own summary.\n\n`rollupSourcesUnavailable` maps a namespace name (or the cluster scope,\nkey `\"\"`) to the rollup source collections (`pod`, `replicaset`,\n`endpointslice`, `job`, `event`, `node`) that came back forbidden/failed\nthis run -- any rollup facet needing one of them was omitted rather than\nreported with a false empty/zero. Capped so a cluster with many\nforbidden namespaces can't bloat this envelope.",
   "properties": {
     "syncId": {
       "title": "Syncid",
@@ -80,6 +80,16 @@
     "clusterUid": {
       "title": "Clusteruid",
       "type": "string"
+    },
+    "rollupSourcesUnavailable": {
+      "additionalProperties": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "title": "Rollupsourcesunavailable",
+      "type": "object"
     }
   },
   "required": [

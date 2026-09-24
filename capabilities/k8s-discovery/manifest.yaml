@@ -22,7 +22,6 @@ execution:
   idleTtlSeconds: 900
   requestTimeoutSeconds: 1500     # discover's ceiling for a large cluster; inspect finishes in seconds
   resources: {memoryRequest: 256Mi, memoryLimit: 1Gi, cpuRequest: 100m, cpuLimit: "1"}
-  workSizeLimit: 256Mi            # streams to papi; nothing is staged on disk
 
 # --- which subjects this capability applies to; ANY entry matching => applies ----------
 appliesTo:

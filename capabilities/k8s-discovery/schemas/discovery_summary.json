@@ -1,0 +1,96 @@
+{
+  "$defs": {
+    "DiscoveryCounts": {
+      "properties": {
+        "created": {
+          "default": 0,
+          "title": "Created",
+          "type": "integer"
+        },
+        "updated": {
+          "default": 0,
+          "title": "Updated",
+          "type": "integer"
+        },
+        "unchanged": {
+          "default": 0,
+          "title": "Unchanged",
+          "type": "integer"
+        },
+        "deleted": {
+          "default": 0,
+          "title": "Deleted",
+          "type": "integer"
+        },
+        "held": {
+          "default": 0,
+          "title": "Held",
+          "type": "integer"
+        }
+      },
+      "title": "DiscoveryCounts",
+      "type": "object"
+    },
+    "DiscoveryPartitionCounts": {
+      "properties": {
+        "complete": {
+          "default": 0,
+          "title": "Complete",
+          "type": "integer"
+        },
+        "failed": {
+          "default": 0,
+          "title": "Failed",
+          "type": "integer"
+        },
+        "forbidden": {
+          "default": 0,
+          "title": "Forbidden",
+          "type": "integer"
+        }
+      },
+      "title": "DiscoveryPartitionCounts",
+      "type": "object"
+    }
+  },
+  "description": "Output of the `discover` task -- `rw.discovery_summary.v1`. Bulk\ndata never rides this envelope (it goes straight to papi through the\nsync API, platform-contract \u00a73); this is only the run's own summary.",
+  "properties": {
+    "syncId": {
+      "title": "Syncid",
+      "type": "string"
+    },
+    "packDigest": {
+      "title": "Packdigest",
+      "type": "string"
+    },
+    "counts": {
+      "$ref": "#/$defs/DiscoveryCounts"
+    },
+    "partitions": {
+      "$ref": "#/$defs/DiscoveryPartitionCounts"
+    },
+    "durationMs": {
+      "title": "Durationms",
+      "type": "integer"
+    },
+    "serverVersion": {
+      "title": "Serverversion",
+      "type": "string"
+    },
+    "clusterUid": {
+      "title": "Clusteruid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "syncId",
+    "packDigest",
+    "counts",
+    "partitions",
+    "durationMs",
+    "serverVersion",
+    "clusterUid"
+  ],
+  "title": "DiscoverySummary",
+  "type": "object"
+}

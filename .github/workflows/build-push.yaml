@@ -1,0 +1,532 @@
+name: Build And Push
+
+# Builds this repo's one capability image -- k8s-discovery (stateless) --
+# and pushes a multi-arch manifest to GHCR under the tag schema the
+# cc-registry-v2 image catalog expects:
+#
+#     <sanitized-ref>-<cc_sha7>
+#
+# Where:
+#   sanitized-ref = github.ref_name with '/' -> '-' (e.g. "main", "feature-foo", "pr-42")
+#   cc_sha7       = first 7 chars of github.sha (this repo's commit)
+#
+# Modelled directly on rw-checks-codecollection's build-push.yaml -- same
+# job structure, same tag scheme, same secrets usage (only
+# secrets.GITHUB_TOKEN, for GHCR login) -- reduced from that repo's two
+# capabilities (rw-checks, rw-worktree) down to this repo's one
+# (k8s-discovery). Image == capability, 1:1
+# (rwdiscovery-adjacent rw-checks-codecollection's
+# sdk/runwhen_capability/loader.py's discover_capability_dir docstring).
+#
+# Architecture
+# ------------
+# The build is split across three jobs, same reasoning as rw-checks-
+# codecollection:
+#
+#   prepare        -- compute the shared tag suffixes + push flag ONCE;
+#                     also validates the capability manifest's shape once
+#   build (matrix) -- one job per platform, each on its own native runner:
+#                       linux/amd64 -> ubuntu-latest
+#                       linux/arm64 -> ubuntu-24.04-arm
+#                     each job:
+#                       1. builds the image natively (no QEMU)
+#                       2. loads it into the local docker daemon
+#                       3. runs the smoke test against the native arch --
+#                          including that rwtask actually starts serving
+#                          k8s-discovery, not just that the binary runs
+#                       4. on push, builds again push-by-digest (no tags)
+#                          and exports the per-platform digest as an
+#                          artifact, keyed by arch
+#   merge          -- pulls the per-platform digests and uses `docker
+#                     buildx imagetools create` to stitch them into a
+#                     single multi-arch manifest under every tag prepare
+#                     computed, then renders manifest.yaml with the
+#                     resolved digest and uploads it as a build artifact.
+#
+# `test` runs independently and gates `build`: rwdiscovery's own
+# pytest/ruff suite is cheap and fast, and a broken task host should never
+# reach an image push.
+#
+# Build triggers:
+#   - push to ANY branch  -> produces a CodeCollectionVersion image for that branch
+#   - pull_request to ANY base branch -> produces a "pr-<n>" preview image
+#   - workflow_dispatch  -> manual build
+#
+# We build off non-main branches on purpose: each branch is a candidate CCV
+# the catalog can pin to. Path filters below skip rebuilds for pure
+# docs / config-only diffs.
+
+on:
+  push:
+    branches:
+      - '**'            # all branches; tag pushes (refs/tags/*) are excluded
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+      - '.gitignore'
+      - 'docs/**'
+  pull_request:
+    # No branches: restriction -> triggers on PRs targeting any base branch
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+      - '.gitignore'
+      - 'docs/**'
+  workflow_dispatch:
+    inputs:
+      push:
+        description: "Push the resulting image to GHCR."
+        required: false
+        default: true
+        type: boolean
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: rw-discovery-codecollection
+  CAPABILITY: k8s-discovery
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # ===========================================================================
+  # test — rwdiscovery's own suite. Independent of prepare/build so it
+  # starts immediately; `build` depends on it so a broken task host never
+  # reaches an image push.
+  # ===========================================================================
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: python3 -m pip install --quiet -e ".[dev]"
+
+      - name: Verify checked-in schemas match the models
+        run: python3 scripts/export_schemas.py && git diff --exit-code capabilities/k8s-discovery/schemas
+
+      - name: pytest
+        run: python3 -m pytest -q
+
+      - name: ruff check
+        run: ruff check .
+
+      - name: ruff format --check
+        run: ruff format --check .
+
+  # ===========================================================================
+  # prepare — single source of truth for the tag suffixes and push flag so
+  # the matrix build and the merge job don't drift. Also validates the
+  # capability manifest's shape once, up front.
+  # ===========================================================================
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      should_push: ${{ steps.push_flag.outputs.should_push }}
+      canonical_tag: ${{ steps.meta.outputs.canonical_tag }}
+      extra_tags: ${{ steps.meta.outputs.extra_tags }}
+      owner_lc: ${{ steps.meta.outputs.owner_lc }}
+      cc_sha: ${{ steps.meta.outputs.cc_sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Determine push flag
+        id: push_flag
+        run: |
+          # A `pull_request` from a fork never pushes: GHCR login only
+          # works with write-scoped credentials, and a fork PR's
+          # GITHUB_TOKEN is read-only by GitHub's own security model, so
+          # this used to fail an external contributor's build at the push
+          # step over nothing they did wrong. An "internal" PR (head repo
+          # == this repo) still builds and pushes a `pr-<n>` preview image,
+          # same as before.
+          case "${{ github.event_name }}" in
+            push)
+              echo "should_push=true" >> "$GITHUB_OUTPUT" ;;
+            pull_request)
+              if [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+                echo "should_push=true" >> "$GITHUB_OUTPUT"
+              else
+                echo "should_push=false" >> "$GITHUB_OUTPUT"
+              fi
+              ;;
+            workflow_dispatch)
+              echo "should_push=${{ inputs.push }}" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "should_push=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Compute tag suffixes
+        id: meta
+        run: |
+          set -euo pipefail
+
+          # --- this repo's sha ---
+          cc_sha="${{ github.sha }}"
+          cc_sha7="${cc_sha:0:7}"
+
+          # --- ref name (PRs collapse to "pr-<n>" since github.ref_name on
+          #     pull_request is "<n>/merge", which is useless as an OCI tag) ---
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            ref_name="pr-${{ github.event.pull_request.number }}"
+          else
+            ref_name="${{ github.ref_name }}"
+          fi
+          # OCI tags must match [A-Za-z0-9_.-]{1,128}. We replace '/' with '-'
+          # so refs like "release/1.2" survive intact.
+          sanitized_ref="$(echo "${ref_name}" | tr '/' '-' | tr -c 'A-Za-z0-9_.-' '-' | sed 's/^-*//;s/-*$//')"
+
+          # --- registry owner path segment (GHCR rejects uppercase) ---
+          owner_lc="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+
+          # --- canonical immutable tag the catalog uses for discovery ---
+          canonical_tag="${sanitized_ref}-${cc_sha7}"
+
+          # --- moving-pointer alias suffixes (re-pointed on every build) ---
+          extra=( "${sanitized_ref}" )
+          case "${{ github.event_name }}" in
+            push|workflow_dispatch)
+              if [ "${{ github.ref_name }}" = "main" ]; then
+                extra+=( "latest" )
+              fi
+              ;;
+            pull_request)
+              extra=( "pr-${{ github.event.pull_request.number }}" )
+              ;;
+          esac
+
+          {
+            echo "cc_sha=${cc_sha}"
+            echo "sanitized_ref=${sanitized_ref}"
+            echo "owner_lc=${owner_lc}"
+            echo "canonical_tag=${canonical_tag}"
+            printf 'extra_tags=%s\n' "$(IFS=,; echo "${extra[*]}")"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Will publish"
+            echo
+            echo "- Canonical tag suffix: \`${canonical_tag}\`"
+            echo "- Alias tag suffixes:   $(IFS=,; echo "${extra[*]}")"
+            echo
+            echo "- Codecollection sha: \`${cc_sha}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Validate the capability manifest
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet pyyaml
+          python3 - <<'PY'
+          import sys
+          import yaml
+
+          REQUIRED_KEYS = {
+              "apiVersion", "capability", "version", "description", "image",
+              "execution", "appliesTo", "needs", "setup", "tasks", "retention",
+          }
+
+          with open("capabilities/k8s-discovery/manifest.yaml") as f:
+              manifest = yaml.safe_load(f)
+
+          missing = REQUIRED_KEYS - manifest.keys()
+          if missing:
+              sys.exit(f"manifest.yaml: missing required keys: {sorted(missing)}")
+          if manifest["capability"] != "k8s-discovery":
+              sys.exit(f"manifest.yaml: 'capability' must be 'k8s-discovery', got {manifest['capability']!r}")
+          if manifest["execution"].get("mode") != "stateless":
+              sys.exit(f"manifest.yaml: execution.mode must be 'stateless', got {manifest['execution'].get('mode')!r}")
+          by_name = {t["name"]: t for t in manifest["tasks"]}
+          if by_name.get("discover", {}).get("readOnly") is not False:
+              sys.exit("manifest.yaml: discover task must declare readOnly: false")
+          if by_name.get("inspect", {}).get("readOnly") is not True:
+              sys.exit("manifest.yaml: inspect task must declare readOnly: true")
+          print("manifest.yaml: has all required top-level keys, capability=k8s-discovery, mode=stateless")
+          PY
+
+  # ===========================================================================
+  # build — parallel native builds, one leg per platform, so each runs on a
+  # runner whose architecture matches the platform it is building, with no
+  # QEMU emulation cost.
+  # ===========================================================================
+  build:
+    needs: [prepare, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: needs.prepare.outputs.should_push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute manifest label build-args
+        id: labels
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 scripts/manifest_label.py >> "$GITHUB_OUTPUT"
+
+      # ----------------------------------------------------------------
+      # Phase 1: build natively + load locally so we can exec the smoke
+      # test. Per-arch GHA cache scope -- matrix legs run in parallel on
+      # different runners, so they MUST NOT share a scope.
+      # ----------------------------------------------------------------
+      - name: Build (native, load)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.k8s-discovery
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:smoke
+          build-args: |
+            REVISION=${{ github.sha }}
+            CREATED=${{ github.event.repository.updated_at }}
+            CAPABILITY=${{ steps.labels.outputs.capability }}
+            CAPABILITY_VERSION=${{ steps.labels.outputs.capability_version }}
+            MANIFEST_B64=${{ steps.labels.outputs.manifest_b64 }}
+          cache-from: type=gha,scope=${{ env.IMAGE_NAME }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ env.IMAGE_NAME }}-${{ matrix.arch }}
+
+      - name: Smoke test image
+        env:
+          IMG: ${{ env.IMAGE_NAME }}:smoke
+        run: |
+          set -euo pipefail
+          # Native-arch exec of the image -- verifies rwtask is on PATH and
+          # callable as plain argv (no ENTRYPOINT override needed -- see the
+          # Dockerfile's `ENTRYPOINT []`), and that this capability's
+          # manifest is well-formed.
+          docker run --rm "${IMG}" rwtask --help
+          # discover registers the pack first thing; prove the image can load it.
+          docker run --rm "${IMG}" python -c "from rwdiscovery.packbuild import build_pack_payload; p = build_pack_payload([]); assert p['types'] and p['dependencyRules'], p.keys()"
+          docker run --rm -v "${{ github.workspace }}:/w" -w /w "${IMG}" \
+            python3 -c "import yaml; d = yaml.safe_load(open('capabilities/k8s-discovery/manifest.yaml')); assert d['capability'] == 'k8s-discovery'"
+
+          # No shell tools ship in this image -- discovery talks HTTP only.
+          if docker run --rm "${IMG}" sh -c 'command -v kubectl' >/dev/null 2>&1; then
+            echo "k8s-discovery image must not ship kubectl" >&2
+            exit 1
+          fi
+
+          # rwtask serve actually starts and loads k8s-discovery -- not just
+          # that the loader error is gone, but that it resolved THIS
+          # capability. `serve` logs "serving capability ... from ..."
+          # immediately after a successful load, before it ever polls a
+          # relay, so a stub the poll 404s/501s against is enough.
+          python3 -m http.server 8877 --directory /dev/null &
+          STUB_PID=$!
+          sleep 1
+          CONTAINER="$(docker run -d --add-host=host.docker.internal:host-gateway "${IMG}" \
+            rwtask serve --relay http://host.docker.internal:8877 --pool smoke-pool)"
+          sleep 5
+          docker logs "${CONTAINER}" 2>&1 | tee /tmp/serve.log
+          docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
+          kill "${STUB_PID}" 2>/dev/null || true
+          grep -qE "serving capability 'k8s-discovery'.* from capabilities/k8s-discovery" /tmp/serve.log \
+            || { echo "rwtask serve never logged a successful capability load" >&2
+                 echo "--- serve.log ---" >&2; cat /tmp/serve.log >&2; exit 1; }
+
+      # ----------------------------------------------------------------
+      # Phase 2: only on push -- rebuild push-by-digest. This writes the
+      # platform-specific manifest into the registry WITHOUT any
+      # human-readable tags. The merge job assembles the multi-arch
+      # manifest from these digests under the canonical tags.
+      # ----------------------------------------------------------------
+      - name: Build & push by digest
+        id: digest_push
+        if: needs.prepare.outputs.should_push == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.k8s-discovery
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ needs.prepare.outputs.owner_lc }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            REVISION=${{ github.sha }}
+            CREATED=${{ github.event.repository.updated_at }}
+            CAPABILITY=${{ steps.labels.outputs.capability }}
+            CAPABILITY_VERSION=${{ steps.labels.outputs.capability_version }}
+            MANIFEST_B64=${{ steps.labels.outputs.manifest_b64 }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            io.runwhen.codecollection.commit=${{ github.sha }}
+          cache-from: type=gha,scope=${{ env.IMAGE_NAME }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ env.IMAGE_NAME }}-${{ matrix.arch }}
+
+      - name: Stage digest for merge job
+        if: needs.prepare.outputs.should_push == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/digests
+          digest="${{ steps.digest_push.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        if: needs.prepare.outputs.should_push == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ===========================================================================
+  # merge — combine the per-arch digests into the final multi-arch
+  # manifest under every tag prepare computed (`docker buildx imagetools
+  # create` is a registry-side metadata operation -- no image rebuild),
+  # then render manifest.yaml with the resolved digest.
+  # ===========================================================================
+  merge:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.should_push == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifest
+        id: tags
+        env:
+          REPO_LC: ${{ env.REGISTRY }}/${{ needs.prepare.outputs.owner_lc }}/${{ env.IMAGE_NAME }}
+          CANONICAL_TAG: ${{ needs.prepare.outputs.canonical_tag }}
+          EXTRA_TAGS: ${{ needs.prepare.outputs.extra_tags }}
+        run: |
+          set -euo pipefail
+          tags=( "${REPO_LC}:${CANONICAL_TAG}" )
+          IFS=',' read -ra EXTRA <<< "${EXTRA_TAGS}"
+          for suffix in "${EXTRA[@]}"; do tags+=( "${REPO_LC}:${suffix}" ); done
+
+          tag_args=()
+          for t in "${tags[@]}"; do tag_args+=(-t "$t"); done
+
+          digest_args=()
+          for f in /tmp/digests/*; do
+            d="$(basename "$f")"
+            digest_args+=("${REPO_LC}@sha256:${d}")
+          done
+
+          echo "Tags:    ${tags[*]}"
+          echo "Digests: ${digest_args[*]}"
+
+          docker buildx imagetools create "${tag_args[@]}" "${digest_args[@]}"
+
+          printf 'tags=%s\n' "$(IFS=,; echo "${tags[*]}")" >> "$GITHUB_OUTPUT"
+
+      - name: Inspect resulting manifest
+        id: inspect
+        env:
+          REPO_LC: ${{ env.REGISTRY }}/${{ needs.prepare.outputs.owner_lc }}/${{ env.IMAGE_NAME }}
+          CANONICAL_TAG: ${{ needs.prepare.outputs.canonical_tag }}
+        run: |
+          set -euo pipefail
+          out="$(docker buildx imagetools inspect "${REPO_LC}:${CANONICAL_TAG}")"
+          echo "${out}"
+          digest="$(echo "${out}" | awk '/^Digest:/ {print $2; exit}')"
+          if [ -z "${digest}" ]; then
+            echo "could not parse the multi-arch manifest digest from imagetools inspect output" >&2
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      # Per the RunWhen capability manifest format: the shipped image is
+      # digest-pinned, injected at publish time -- a tag is not a version.
+      # This does not commit back to the repo -- it publishes the resolved
+      # manifest as a build artifact for the platform's catalog
+      # registration step to pick up.
+      - name: Render capability manifest with the resolved digest
+        env:
+          REPO_LC: ${{ env.REGISTRY }}/${{ needs.prepare.outputs.owner_lc }}/${{ env.IMAGE_NAME }}
+          DIGEST: ${{ steps.inspect.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/manifest
+          sed -E "s|^image: .*|image: ${REPO_LC}@${DIGEST}|" \
+            capabilities/k8s-discovery/manifest.yaml > /tmp/manifest/manifest.yaml
+          python3 -m pip install --quiet pyyaml
+          python3 - <<'PY'
+          import yaml
+          with open("/tmp/manifest/manifest.yaml") as f:
+              m = yaml.safe_load(f)
+          assert "INJECTED_BY_CI" not in m["image"], f"digest was not injected: {m['image']!r}"
+          print(f"rendered manifest image: {m['image']}")
+          PY
+
+      - name: Upload rendered manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: capability-manifest-k8s-discovery
+          path: /tmp/manifest/manifest.yaml
+          retention-days: 30
+
+      - name: Summary
+        env:
+          REPO_LC: ${{ env.REGISTRY }}/${{ needs.prepare.outputs.owner_lc }}/${{ env.IMAGE_NAME }}
+          CANONICAL_TAG: ${{ needs.prepare.outputs.canonical_tag }}
+          TAG_CSV: ${{ steps.tags.outputs.tags }}
+          DIGEST: ${{ steps.inspect.outputs.digest }}
+        run: |
+          {
+            echo "## ${{ env.IMAGE_NAME }} build"
+            echo
+            echo "- Event:               \`${{ github.event_name }}\`"
+            echo "- Ref:                 \`${{ github.ref }}\`"
+            echo "- Codecollection sha:  \`${{ github.sha }}\`"
+            echo "- Canonical tag:       \`${REPO_LC}:${CANONICAL_TAG}\`"
+            echo "- Digest:              \`${DIGEST}\`"
+            echo "- Pushed:              \`true\`"
+            echo
+            echo "### Published tags"
+            IFS=',' read -ra TAGS <<< "${TAG_CSV}"
+            for t in "${TAGS[@]}"; do echo "- \`${t}\`"; done
+          } >> "$GITHUB_STEP_SUMMARY"

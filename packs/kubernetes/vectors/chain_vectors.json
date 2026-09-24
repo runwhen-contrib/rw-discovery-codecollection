@@ -1,0 +1,122 @@
+[
+  {
+    "description": "the cluster root itself",
+    "clusterName": "acme-prod-eu",
+    "object": null,
+    "expect": {"chain": [["cluster", "acme-prod-eu"]]}
+  },
+  {
+    "description": "a Namespace",
+    "clusterName": "acme-prod-eu",
+    "object": {
+      "apiVersion": "v1",
+      "kind": "Namespace",
+      "metadata": {"name": "acme-payments"}
+    },
+    "expect": {"chain": [["cluster", "acme-prod-eu"], ["namespace", "acme-payments"]]}
+  },
+  {
+    "description": "a Deployment (builtin, namespaced)",
+    "clusterName": "acme-prod-eu",
+    "object": {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {"name": "api", "namespace": "acme-payments"}
+    },
+    "expect": {
+      "chain": [
+        ["cluster", "acme-prod-eu"],
+        ["namespace", "acme-payments"],
+        ["deployment", "api"]
+      ]
+    }
+  },
+  {
+    "description": "a Node (builtin, cluster-scoped)",
+    "clusterName": "acme-prod-eu",
+    "object": {
+      "apiVersion": "v1",
+      "kind": "Node",
+      "metadata": {"name": "acme-node-1"}
+    },
+    "expect": {"chain": [["cluster", "acme-prod-eu"], ["node", "acme-node-1"]]}
+  },
+  {
+    "description": "a ClusterRole whose name contains colons",
+    "clusterName": "acme-prod-eu",
+    "object": {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "ClusterRole",
+      "metadata": {"name": "system:controller:job-controller"}
+    },
+    "expect": {
+      "chain": [
+        ["cluster", "acme-prod-eu"],
+        ["clusterrole", "system:controller:job-controller"]
+      ]
+    }
+  },
+  {
+    "description": "legacy extensions/v1beta1 Ingress aliases to the same type as networking.k8s.io/v1",
+    "clusterName": "acme-prod-eu",
+    "object": {
+      "apiVersion": "extensions/v1beta1",
+      "kind": "Ingress",
+      "metadata": {"name": "api", "namespace": "acme-payments"}
+    },
+    "expect": {
+      "chain": [
+        ["cluster", "acme-prod-eu"],
+        ["namespace", "acme-payments"],
+        ["ingress", "api"]
+      ]
+    }
+  },
+  {
+    "description": "a CRD instance (cert-manager Certificate) -- <kind>.<group>",
+    "clusterName": "acme-prod-eu",
+    "object": {
+      "apiVersion": "cert-manager.io/v1",
+      "kind": "Certificate",
+      "metadata": {"name": "api-tls", "namespace": "acme-payments"}
+    },
+    "expect": {
+      "chain": [
+        ["cluster", "acme-prod-eu"],
+        ["namespace", "acme-payments"],
+        ["certificate.cert-manager.io", "api-tls"]
+      ]
+    }
+  },
+  {
+    "description": "a cluster-scoped CRD instance (Gateway API GatewayClass-shaped example)",
+    "clusterName": "acme-prod-eu",
+    "object": {
+      "apiVersion": "gateway.networking.k8s.io/v1",
+      "kind": "GatewayClass",
+      "metadata": {"name": "acme-gateway-class"}
+    },
+    "expect": {
+      "chain": [
+        ["cluster", "acme-prod-eu"],
+        ["gatewayclass.gateway.networking.k8s.io", "acme-gateway-class"]
+      ]
+    }
+  },
+  {
+    "description": "a Pod (ephemeral, but its chain is still computable so the kubectl fallback can cite it)",
+    "clusterName": "acme-prod-eu",
+    "object": {
+      "apiVersion": "v1",
+      "kind": "Pod",
+      "metadata": {"name": "api-7d9f-x2", "namespace": "acme-payments"}
+    },
+    "expect": {
+      "chain": [
+        ["cluster", "acme-prod-eu"],
+        ["namespace", "acme-payments"],
+        ["pod", "api-7d9f-x2"]
+      ]
+    }
+  }
+]

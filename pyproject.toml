@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rwdiscovery"
+version = "0.1.0"
+description = "Kubernetes discovery capability for the RunWhen platform (rw-discovery-codecollection)"
+requires-python = ">=3.12"
+readme = "README.md"
+license = { file = "LICENSE" }
+dependencies = [
+    # Pinned by commit sha, not a branch or tag -- the equivalent of a hash
+    # pin for a VCS source (pip's --require-hashes mode does not support VCS
+    # requirements at all, so this is installed in its own, non-hash-checked
+    # `pip install` step in Dockerfile.k8s-discovery; see that file's
+    # comment). No packaging changes needed upstream: rw-checks-codecollection's
+    # own pyproject.toml lives at its repo root and packages only sdk/, so a
+    # plain git dependency (no `subdirectory=`) resolves to the
+    # runwhen_capability package alone.
+    "runwhen-capability @ git+https://github.com/runwhen-contrib/rw-checks-codecollection.git@010799fb68dbfb90119f71c591b63c736a1158ff",
+    "kubernetes>=30,<31",
+    "jmespath>=1.0,<2",
+    # Used directly by sync.py (the sync protocol's HTTP client) -- already a
+    # transitive dependency of runwhen_capability, declared explicitly
+    # because we import it ourselves, not only through the SDK.
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "responses>=0.25",
+    "ruff>=0.16",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["rwdiscovery*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+# 120, not rw-checks' 100: chain.py's builtin type table is a dense,
+# deliberately tabular literal (one Kubernetes kind per line) that reads
+# worse wrapped across lines than it does slightly over 100 columns.
+line-length = 120
+target-version = "py312"
+extend-exclude = ["tests/fixtures"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

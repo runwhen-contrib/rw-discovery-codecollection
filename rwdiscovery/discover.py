@@ -27,6 +27,7 @@ from pathlib import Path
 
 from . import credentials
 from .chain import NAMESPACE, ChainItem, build_chain, cluster_chain
+from .connect import read_cluster_uid
 from .enumerate import ApiResource, discover_resources, is_job_owned_by_cronjob
 from .k8s_client import ApiError, ForbiddenError, K8sClient, path_segment
 from .k8s_client import resource_path as api_resource_path
@@ -146,8 +147,7 @@ def run_discover(
 
     version_info = k8s.get_raw("/version")
     server_version = version_info.get("gitVersion", "")
-    kube_system = k8s.get_object("/api/v1/namespaces/kube-system")
-    cluster_uid = (kube_system or {}).get("metadata", {}).get("uid", "")
+    cluster_uid = read_cluster_uid(k8s)
 
     sync_client = SyncClient(credential=ResourceSyncCredential.parse(resource_sync_raw))
 

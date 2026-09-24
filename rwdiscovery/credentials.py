@@ -22,6 +22,7 @@ import tempfile
 from pathlib import Path
 
 from kubernetes import client, config
+from kubernetes.config import kube_config as _kube_config
 
 
 class KubeconfigError(RuntimeError):
@@ -38,6 +39,7 @@ def build_api_client(kubeconfig_yaml: str, workdir: Path) -> client.ApiClient:
         with os.fdopen(fd, "w") as f:
             f.write(kubeconfig_yaml)
         configuration = client.Configuration()
+        _forget_foreign_temp_files(workdir)
         try:
             config.load_kube_config(
                 config_file=raw_path,
@@ -53,3 +55,20 @@ def build_api_client(kubeconfig_yaml: str, workdir: Path) -> client.ApiClient:
             os.unlink(raw_path)
         except OSError:
             pass
+
+
+def _forget_foreign_temp_files(workdir: Path) -> None:
+    """Drop the kubernetes client's cached temp files that live outside `workdir`.
+
+    `kube_config` caches the file it writes for inline CA/cert/key data in a
+    module-level dict keyed by the data alone, ignoring `temp_file_path`. In a
+    warm executor pod the next request with the same cluster CA is handed the
+    PREVIOUS request's file, whose scope directory the task host has already
+    wiped -- "File does not exist" -- and even while it exists, one request
+    must not read another's credential material. Forgetting every entry
+    outside this request's workdir makes each load write its own copy here.
+    """
+    root = os.path.realpath(workdir) + os.sep
+    for key, path in list(_kube_config._temp_files.items()):  # noqa: SLF001 -- no public API for this cache
+        if not os.path.realpath(path).startswith(root):
+            _kube_config._temp_files.pop(key, None)  # noqa: SLF001

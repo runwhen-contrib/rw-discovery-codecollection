@@ -919,3 +919,21 @@ def test_a_failing_abort_never_masks_the_original_error(tmp_path: Path):
     with pytest.raises(SyncClientError, match="/commit: 422"):
         _run(_build_fake_cluster(), tmp_path)
     assert len(abort_calls) == 1
+
+
+@responses.activate
+def test_a_namespace_scoped_credential_that_cannot_read_kube_system_still_discovers(tmp_path: Path):
+    """kube-system is a cluster-scoped Namespace object; a credential bound
+    only inside one namespace cannot read it. The cluster UID is a nice-to-have
+    identifier, so the run proceeds and the cluster item carries no providerUid."""
+    fake_papi = _FakePapi()
+    fake_papi.install()
+    fake_k8s = _build_fake_cluster()
+    fake_k8s.forbidden.add("/api/v1/namespaces/kube-system")
+
+    summary = _run_with_namespaces(fake_k8s, tmp_path, ["acme-payments"])
+
+    assert summary["clusterUid"] == ""
+    cluster_item = fake_papi.item_by_type_and_name("cluster", "acme-prod-eu")
+    assert "providerUid" not in cluster_item
+    assert fake_papi.item_by_type_and_name("deployment", "acme-api") is not None

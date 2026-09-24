@@ -82,14 +82,19 @@ def run_inspect(
     api_version: str | None,
     mode: str,
     workdir: Path,
+    context: str | None = None,
     k8s_client: K8sClient | None = None,
 ) -> dict:
     """`k8s_client` is a test seam only, same convention as
     `discover.run_discover`. Every input arrives from an agent (the v13
-    `kubectl` tool), so each is validated before it reaches an API path."""
+    `kubectl` tool), so each is validated before it reaches an API path.
+
+    `context` selects a named kubeconfig context to build that client from,
+    instead of the kubeconfig's current-context -- ignored when `k8s_client`
+    is supplied, since there is then no client left to build."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
-    k8s = k8s_client or K8sClient(credentials.build_api_client(kubeconfig_yaml, workdir))
+    k8s = k8s_client or K8sClient(credentials.build_api_client(kubeconfig_yaml, workdir, context=context))
     resource = _resolve_api_resource(k8s, kind, api_version)
 
     object_path = api_resource_path(resource.group, resource.version, resource.plural, namespace=namespace, name=name)

@@ -77,6 +77,7 @@ Any failure after the sync is opened aborts it, rather than leaving it to expire
 | `excludeNamespaces` | string[] | no | Ignored if `namespaces` is set. |
 | `configMapValues` | `"store"` \| `"keysOnly"` | no (default `store`) | `keysOnly` drops ConfigMap values, keeping only per-key size/hash -- for a hosted, multi-tenant install. |
 | `overlay` | object | no | `{"redactions": ["dotted.path", ...]}` -- an early, minimal hook for platform-level extra redactions; a fuller, workspace-configured version of this is expected to land later. |
+| `context` | string | no | A named context in the `kubeconfig` credential to build the API client from, instead of its current-context -- lets one kubeconfig serve more than one cluster. A context this kubeconfig doesn't have fails the task immediately with a `KubeconfigError` naming it (`rwdiscovery/credentials.py`). |
 
 ### What `inspect` does
 
@@ -103,6 +104,7 @@ Any failure after the sync is opened aborts it, rather than leaving it to expire
 | `namespace` | string | no (omit for a cluster-scoped kind) |
 | `apiVersion` | string | no (`"group/version"` or `"v1"` for core; resolved via discovery if omitted) |
 | `mode` | `"get"` \| `"describe"` | yes |
+| `context` | string | no (same named-context selection `discover` documents above) |
 
 ## Credentials
 
@@ -121,6 +123,15 @@ incidental temp files (materialised from inline base64 CA/cert/key data) are red
 same scope directory, so the whole credential footprint is wiped when the task host cleans up the
 request, and none of it lingers in the pod's shared `/tmp`. The raw kubeconfig file itself is
 deleted the moment it has been loaded.
+
+**`context`.** By default the API client is built from the `kubeconfig` credential's own
+current-context, same as `kubectl` would. Both tasks accept an optional `context` input (see the
+Inputs tables above) naming one of that same kubeconfig's other contexts instead -- useful when one
+kubeconfig credential is shared across more than one cluster/context. The named context is checked
+against the kubeconfig's own `contexts:` list before anything else happens; a context the
+kubeconfig doesn't have fails the task immediately with a `KubeconfigError` naming it, rather than
+silently falling back to current-context or surfacing a confusing error from deeper in the
+Kubernetes client library.
 
 **Not supported in v1:** a kubeconfig whose auth depends on an **exec credential plugin**
 (`gke-gcloud-auth-plugin`, `aws eks get-token`, `kubelogin`, ...) -- the image ships no shell tools
@@ -276,6 +287,37 @@ In production the image is never driven directly: `rwtask serve --relay <url> --
 long-polls the runner as a warm executor, executing one request (`connect` + `discover` or
 `inspect`) at a time and posting the result back. The image's `CMD` already bakes in its own
 `--capability-dir` so it never has to guess which capability it is serving.
+
+## Releases
+
+`manifest.yaml` declares no `image:` key -- an image cannot know its own digest. Instead, the
+pushed image itself carries its own manifest as an OCI label,
+`com.runwhen.capability.manifest.v1`: the base64 (no line breaks) of `manifest.yaml`, verbatim.
+`scripts/manifest_label.py` computes it at build time; `Dockerfile.k8s-discovery` bakes it in via
+the `MANIFEST_B64` build arg. The codecollection catalog reads this label straight off the pushed
+image's config blob to discover the capability, its id, and its declared version -- never a
+separate build artifact, and never a platform release. Mirrors the same convention
+rw-checks-codecollection established (`docs/platform-contract.md` and that repo's own
+`manifest.yaml` header comment cite the same contract).
+
+To inspect the label on a published image without pulling it:
+
+```
+# crane -- resolves the index to the current platform's image config
+crane config --platform linux/amd64 <ref> | jq -r '.config.Labels["com.runwhen.capability.manifest.v1"]' | base64 -d
+
+# docker buildx -- .Image is keyed by platform for a multi-arch index
+docker buildx imagetools inspect <ref> --format '{{ json (index .Image "linux/amd64") }}' \
+  | jq -r '.config.Labels["com.runwhen.capability.manifest.v1"]' | base64 -d
+```
+
+**Tags.** A push to any branch publishes `<sanitized-ref>-<sha7>` (the catalog's canonical,
+immutable tag for that build) plus a moving `<sanitized-ref>` alias, and `latest` when the branch
+is `main`. A pull request publishes `pr-<n>`. Pushing a semver tag (`v1.2.3`, matching
+`.github/workflows/build-push.yaml`'s `v[0-9]+.[0-9]+.[0-9]+*` trigger) instead publishes a
+**release**: the canonical tag is the tag itself, with no `-<sha7>` suffix and no alias -- no
+`latest`, no branch pointer. The codecollection catalog's `stable` channel resolves to the highest
+semver tag published this way; until one exists, `stable` has nothing to resolve to.
 
 ## Tests
 

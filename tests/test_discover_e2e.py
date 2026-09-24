@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 import responses
 
+import rwdiscovery.credentials as credentials
 from rwdiscovery.discover import run_discover
 from rwdiscovery.sync import SyncClientError
 from tests.fakes import FakeK8sClient
@@ -1200,3 +1201,36 @@ def test_pods_forbidden_in_one_namespace_reports_a_forbidden_pod_partition_there
 
     pushed_types = {i["identity"]["chain"][-1]["type"] for i in fake_papi.pushed_items}
     assert pushed_types.isdisjoint({"pod", "replicaset", "endpointslice", "event"})
+
+
+def test_run_discover_forwards_context_to_build_api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """`context` (manifest input, optional) must reach `build_api_client`
+    unchanged, so it can select a named kubeconfig context instead of
+    current-context. Only exercised when `k8s_client` isn't supplied --
+    production's own path, since every other test in this file injects a
+    fake client and never touches `credentials.build_api_client` at all."""
+    captured: dict = {}
+
+    class _Stop(Exception):
+        pass
+
+    def _fake_build_api_client(kubeconfig_yaml, workdir, context=None):
+        captured["context"] = context
+        raise _Stop
+
+    monkeypatch.setattr(credentials, "build_api_client", _fake_build_api_client)
+
+    with pytest.raises(_Stop):
+        run_discover(
+            kubeconfig_yaml="unused",
+            resource_sync_raw=_resource_sync_credential_raw(),
+            cluster_name="acme-prod-eu",
+            namespaces=None,
+            exclude_namespaces=None,
+            config_map_values="store",
+            overlay=None,
+            workdir=tmp_path,
+            context="ctx-two",
+        )
+
+    assert captured["context"] == "ctx-two"

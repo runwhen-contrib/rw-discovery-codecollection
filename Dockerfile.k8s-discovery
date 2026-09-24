@@ -110,9 +110,16 @@ ENV RWDISCOVERY_PACK_PATH=/app/packs/kubernetes/pack.yaml
 # args because they are the only two values that cannot be known from the
 # source tree alone; CI passes them. CAPABILITY/CAPABILITY_VERSION/
 # MANIFEST_B64 come from scripts/manifest_label.py, so these labels can
-# never drift from the manifest they describe -- the final digest-pinned
-# `image:` field is a separate, later step (CI resolves it after this image
-# is pushed; see .github/workflows/build-push.yaml).
+# never drift from the manifest they describe.
+#
+# com.runwhen.capability.manifest.v1 is the one codecollection-registry's
+# catalog (cc-catalog-svc/app/sources/capability.py's
+# CAPABILITY_MANIFEST_LABEL) actually reads back off the pushed image's
+# config blob to discover this capability -- the exact key and base64
+# encoding rw-checks-codecollection#6 established. There is no
+# CI-resolved-digest step any more: the manifest never carries an `image:`
+# field (see manifest.yaml's own header comment), so there is nothing left
+# for such a step to inject.
 ARG REVISION=unknown
 ARG CREATED=unknown
 ARG CAPABILITY=k8s-discovery
@@ -126,7 +133,7 @@ LABEL org.opencontainers.image.title="k8s-discovery" \
       org.opencontainers.image.created="${CREATED}" \
       io.runwhen.capability="${CAPABILITY}" \
       io.runwhen.capability.version="${CAPABILITY_VERSION}" \
-      io.runwhen.capability.manifest="${MANIFEST_B64}"
+      com.runwhen.capability.manifest.v1="${MANIFEST_B64}"
 
 # Non-root. /work is rwtask serve's default --workdir -- every request's
 # scope directory (<workdir>/<scopeId>/) is created and wiped under it,

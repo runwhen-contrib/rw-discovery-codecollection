@@ -24,6 +24,7 @@ def discover(
     exclude_namespaces: list[str] | None = None,
     config_map_values: str | None = None,
     overlay: dict | None = None,
+    context: str | None = None,
 ):
     summary = discover_lib.run_discover(
         kubeconfig_yaml=ctx.credential("kubeconfig"),
@@ -34,6 +35,7 @@ def discover(
         config_map_values=config_map_values or "store",
         overlay=overlay,
         workdir=ctx.workdir,
+        context=context,
     )
     return {"summary": summary}
 
@@ -47,6 +49,7 @@ def inspect(
     mode: str,
     namespace: str | None = None,
     api_version: str | None = None,
+    context: str | None = None,
 ):
     result = inspect_lib.run_inspect(
         kubeconfig_yaml=ctx.credential("kubeconfig"),
@@ -57,5 +60,6 @@ def inspect(
         api_version=api_version,
         mode=mode,
         workdir=ctx.workdir,
+        context=context,
     )
     return {"object": result}

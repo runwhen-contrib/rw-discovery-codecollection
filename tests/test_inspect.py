@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import rwdiscovery.credentials as credentials
 from rwdiscovery.inspect import run_inspect
 from tests.fakes import FakeK8sClient
 
@@ -219,3 +220,36 @@ def test_inspect_describe_events_are_sanitized_and_filtered_server_side():
     assert "managedFields" not in result["events"][0]["metadata"]
     events_call = next(q for p, q in fake.calls if p.endswith("/events"))
     assert ("fieldSelector", "involvedObject.uid=deploy-uid-1") in events_call
+
+
+def test_run_inspect_forwards_context_to_build_api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """`context` (manifest input, optional) must reach `build_api_client`
+    unchanged, so it can select a named kubeconfig context instead of
+    current-context. Only exercised when `k8s_client` isn't supplied --
+    every other test in this file injects a fake client and never touches
+    `credentials.build_api_client` at all."""
+    captured: dict = {}
+
+    class _Stop(Exception):
+        pass
+
+    def _fake_build_api_client(kubeconfig_yaml, workdir, context=None):
+        captured["context"] = context
+        raise _Stop
+
+    monkeypatch.setattr(credentials, "build_api_client", _fake_build_api_client)
+
+    with pytest.raises(_Stop):
+        run_inspect(
+            kubeconfig_yaml="unused",
+            cluster_name="acme-prod-eu",
+            kind="Deployment",
+            name="acme-api",
+            namespace="acme-payments",
+            api_version="apps/v1",
+            mode="get",
+            workdir=tmp_path,
+            context="ctx-two",
+        )
+
+    assert captured["context"] == "ctx-two"

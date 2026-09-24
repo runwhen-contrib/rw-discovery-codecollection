@@ -166,15 +166,20 @@ def run_discover(
     config_map_values: str,
     overlay: dict | None,
     workdir: Path,
+    context: str | None = None,
     capability_run_uuid: str | None = None,
     k8s_client: K8sClient | None = None,
 ) -> dict:
     """`k8s_client` is a test seam only -- `tasks.py` never passes it, so
     production always materialises a fresh client from the `kubeconfig`
     credential (`credentials.build_api_client`); tests inject a fake
-    `K8sClient` (see `tests/fakes.py`) instead of a real cluster."""
+    `K8sClient` (see `tests/fakes.py`) instead of a real cluster.
+
+    `context` selects a named kubeconfig context to build that client from,
+    instead of the kubeconfig's current-context -- ignored when `k8s_client`
+    is supplied, since there is then no client left to build."""
     started = time.monotonic()
-    k8s = k8s_client or K8sClient(credentials.build_api_client(kubeconfig_yaml, workdir))
+    k8s = k8s_client or K8sClient(credentials.build_api_client(kubeconfig_yaml, workdir, context=context))
     sanitize_options = SanitizeOptions(
         config_map_values=config_map_values or "store",
         extra_redactions=(overlay or {}).get("redactions", []),

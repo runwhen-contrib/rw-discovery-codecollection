@@ -3,16 +3,17 @@
 # tasks this capability exposes). If this needs to diverge from either,
 # raise it there first.
 #
-# `image` below is a build-time placeholder. CI resolves the digest of the
-# image it just pushed and rewrites this field to
-# ghcr.io/runwhen-contrib/rw-discovery-codecollection@sha256:<actual digest>
-# before the manifest is picked up by the catalog. Do not hand-edit the
-# placeholder; do not ship it as-is.
+# There is no `image` key here: an image cannot know its own digest. This
+# manifest instead rides the image itself, as the OCI label
+# com.runwhen.capability.manifest.v1 (base64 of this file, verbatim) --
+# scripts/manifest_label.py produces that value at build time, and
+# codecollection-registry's catalog reads it straight off the pushed image.
+# See rw-checks-codecollection's capabilities/rw-checks/manifest.yaml for
+# the same convention this mirrors.
 apiVersion: capability/v1
 capability: k8s-discovery
 version: "0.1.0"
 description: Kubernetes cluster discovery -- enumerate, sanitize and sync resources to the platform's resource inventory
-image: ghcr.io/runwhen-contrib/rw-discovery-codecollection@sha256:INJECTED_BY_CI
 
 # --- generic scheduling knobs; papi forwards these to the runner verbatim -------------
 execution:
@@ -21,7 +22,17 @@ execution:
   maxConcurrentPerPod: 4          # inspect calls are small; discover is one long request
   idleTtlSeconds: 900
   requestTimeoutSeconds: 1500     # discover's ceiling for a large cluster; inspect finishes in seconds
-  resources: {memoryRequest: 256Mi, memoryLimit: 1Gi, cpuRequest: 100m, cpuLimit: "1"}
+  resources:
+    cpuRequest: "100m"
+    cpuLimit: "1"
+    memoryRequest: "256Mi"
+    memoryLimit: "1Gi"
+  # A large cluster's discovery sweep keeps no bulk data resident on disk
+  # (every item streams straight to papi via the sync protocol), but the
+  # kubeconfig credential and its incidental temp files (credentials.py)
+  # live under workdir for the life of one request -- 1Gi is comfortably
+  # above anything that footprint needs.
+  workSizeLimit: "1Gi"
 
 # --- which subjects this capability applies to; ANY entry matching => applies ----------
 appliesTo:
@@ -56,6 +67,7 @@ tasks:
       excludeNamespaces: { from: request, optional: true }
       configMapValues:   { from: request, optional: true }
       overlay:           { from: request, optional: true }
+      context:           { from: request, optional: true }  # named kubeconfig context; defaults to current-context
     outputs:
       summary:
         kind: rw.discovery_summary.v1
@@ -71,6 +83,7 @@ tasks:
       namespace:   { from: request, optional: true }
       apiVersion:  { from: request, optional: true }
       mode:        { from: request }               # "get" | "describe"
+      context:     { from: request, optional: true }  # named kubeconfig context; defaults to current-context
     outputs:
       object:
         kind: rw.k8s_object.v1

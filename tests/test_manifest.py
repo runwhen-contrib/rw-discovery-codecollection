@@ -1,20 +1,39 @@
 """Sanity-checks the shipped capability manifest -- mirrors rw-checks-
-codecollection's tests/test_manifest.py."""
+codecollection's tests/test_manifest.py.
+
+Also covers the capability release model (rw-checks-codecollection#6,
+codecollection-registry#189): the manifest has no `image` key -- an image
+cannot know its own digest -- and `Dockerfile.k8s-discovery` labels the
+built image with `com.runwhen.capability.manifest.v1`, the exact OCI label
+`cc-catalog-svc/app/sources/capability.py`'s `CAPABILITY_MANIFEST_LABEL`
+reads back off the pushed image."""
 
 from __future__ import annotations
 
+import base64
+import subprocess
+import sys
 from pathlib import Path
 
 from runwhen_capability.loader import load_capability, load_manifest
 
-CAPABILITY_DIR = Path(__file__).resolve().parent.parent / "capabilities" / "k8s-discovery"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+CAPABILITY_DIR = REPO_ROOT / "capabilities" / "k8s-discovery"
+DOCKERFILE = REPO_ROOT / "Dockerfile.k8s-discovery"
+MANIFEST_LABEL_SCRIPT = REPO_ROOT / "scripts" / "manifest_label.py"
+
+# The exact label codecollection-registry#189's cc-catalog-svc/app/sources/
+# capability.py reads (`CAPABILITY_MANIFEST_LABEL`). Any drift here between
+# what the Dockerfile writes and what the catalog reads means the catalog
+# silently never discovers this capability -- see
+# test_dockerfile_label_key_matches_the_catalog_reader below.
+CAPABILITY_MANIFEST_LABEL = "com.runwhen.capability.manifest.v1"
 
 REQUIRED_KEYS = {
     "apiVersion",
     "capability",
     "version",
     "description",
-    "image",
     "execution",
     "appliesTo",
     "needs",
@@ -30,10 +49,36 @@ def test_manifest_has_required_top_level_keys():
     assert not missing, missing
 
 
+def test_manifest_has_no_image_key():
+    # An image cannot know its own digest -- the registry/catalog own it
+    # now. The manifest rides the image itself, as the
+    # com.runwhen.capability.manifest.v1 label (see the Dockerfile tests
+    # below).
+    manifest = load_manifest(CAPABILITY_DIR)
+    assert "image" not in manifest
+
+
 def test_manifest_capability_id_and_execution_mode():
     manifest = load_manifest(CAPABILITY_DIR)
     assert manifest["capability"] == "k8s-discovery"
     assert manifest["execution"]["mode"] == "stateless"
+
+
+def test_manifest_execution_resources_and_work_size_limit():
+    manifest = load_manifest(CAPABILITY_DIR)
+    resources = manifest["execution"]["resources"]
+    assert resources.keys() == {"cpuRequest", "cpuLimit", "memoryRequest", "memoryLimit"}
+    assert all(isinstance(v, str) for v in resources.values())
+    assert isinstance(manifest["execution"]["workSizeLimit"], str)
+
+
+def test_manifest_declares_optional_context_input_for_discover_and_inspect():
+    manifest = load_manifest(CAPABILITY_DIR)
+    by_name = {t["name"]: t for t in manifest["tasks"]}
+    for name in ("discover", "inspect"):
+        context_input = by_name[name]["inputs"]["context"]
+        assert context_input["from"] == "request"
+        assert context_input["optional"] is True
 
 
 def test_manifest_declares_both_credentials():
@@ -68,6 +113,7 @@ _KNOWN_EXECUTION_KEYS = {
     "idleTtlSeconds",
     "requestTimeoutSeconds",
     "resources",
+    "workSizeLimit",
 }
 
 
@@ -99,3 +145,39 @@ def test_manifest_inputs_match_the_function_signatures():
 def test_manifest_execution_uses_only_fields_the_platform_understands():
     manifest = load_manifest(CAPABILITY_DIR)
     assert set(manifest["execution"]) <= _KNOWN_EXECUTION_KEYS, set(manifest["execution"]) - _KNOWN_EXECUTION_KEYS
+
+
+# ---------------------------------------------------------------------------
+# release model: the manifest label the Dockerfile writes and the catalog
+# reads (codecollection-registry#189's cc-catalog-svc/app/sources/
+# capability.py), and scripts/manifest_label.py, which computes it.
+# ---------------------------------------------------------------------------
+def test_dockerfile_label_key_matches_the_catalog_reader():
+    dockerfile_text = DOCKERFILE.read_text()
+    assert f'{CAPABILITY_MANIFEST_LABEL}="${{MANIFEST_B64}}"' in dockerfile_text
+    # The old, pre-release-model label name must not linger alongside it.
+    assert "io.runwhen.capability.manifest=" not in dockerfile_text
+
+
+def _run_manifest_label_script() -> dict[str, str]:
+    result = subprocess.run(
+        [sys.executable, str(MANIFEST_LABEL_SCRIPT)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return dict(line.split("=", 1) for line in result.stdout.splitlines() if line)
+
+
+def test_manifest_label_script_round_trips_the_manifest_bytes():
+    outputs = _run_manifest_label_script()
+    manifest_bytes = (CAPABILITY_DIR / "manifest.yaml").read_bytes()
+    assert base64.b64decode(outputs["manifest_b64"]) == manifest_bytes
+
+
+def test_manifest_label_script_reports_capability_and_version():
+    outputs = _run_manifest_label_script()
+    manifest = load_manifest(CAPABILITY_DIR)
+    assert outputs["capability"] == manifest["capability"]
+    assert outputs["capability_version"] == manifest["version"]

@@ -258,7 +258,7 @@ outputs. `k8s-discovery` declares three:
   following task can reference (`serverVersion`, the cluster's `clusterUid`). If the cluster can't
   be reached, the whole request fails here, before `discover` or `inspect` ever starts.
 - **`discover`** -- inputs `{clusterName, namespaces?, excludeNamespaces?, configMapValues?,
-  overlay?}`; output `summary` (kind `rw.discovery_summary.v1`):
+  overlay?, context?}`; output `summary` (kind `rw.discovery_summary.v1`):
   `{syncId, packDigest, counts, partitions, durationMs, serverVersion, clusterUid,
   rollupSourcesUnavailable}`. No bulk data ever rides this output -- every discovered resource goes
   straight to the platform through the sync protocol (§3); this result is only the run's own
@@ -273,12 +273,38 @@ outputs. `k8s-discovery` declares three:
   applied to, rather than pushed with a false empty or zero count (the platform keeps the last
   value it had and ages it into `stale` by the facet's own TTL instead).
 - **`inspect`** -- inputs `{clusterName, kind, name, namespace?, apiVersion?, mode: "get" |
-  "describe"}`; output `object` (kind `rw.k8s_object.v1`): `{path, found, object?, describe?,
-  events?}`. Declared `readOnly: true` in the manifest: it never writes to the platform's
-  inventory, and never shells out to anything. It computes its `path` using the same chain-
-  building rules `discover` uses, so the two never disagree about a given object's identity.
+  "describe", context?}`; output `object` (kind `rw.k8s_object.v1`): `{path, found, object?,
+  describe?, events?}`. Declared `readOnly: true` in the manifest: it never writes to the
+  platform's inventory, and never shells out to anything. It computes its `path` using the same
+  chain-building rules `discover` uses, so the two never disagree about a given object's identity.
 
 Both tasks share the same sanitizer, so nothing an `inspect` caller can read through `get` or
 `describe` differs from what `discover`'s bulk push would already have stored -- see this repo's
 README, "Sanitization policy" section, for the full policy (what is dropped, what is masked, and
 why).
+
+`context`, on both tasks, names one of the `kubeconfig` credential's own contexts to build the API
+client from, instead of its current-context -- the credential itself is unchanged; `context` only
+selects which of its contexts this particular run addresses. Checked against the kubeconfig's own
+`contexts:` list before either task does anything else; a context the kubeconfig does not have
+fails the task immediately, naming it (`rwdiscovery/credentials.py`'s `KubeconfigError`), never a
+silent fall-back to current-context.
+
+## 6. Capability image releases
+
+`k8s-discovery` follows the same capability-image release model as `rw-checks-codecollection`
+(that repo's PR introducing it, and `codecollection-registry`'s catalog reader that consumes it,
+are the reference implementations this section mirrors):
+
+- **No `image:` key in the manifest.** An image cannot know its own digest at the time it is
+  built; the registry and catalog own that mapping, not this repo's checked-in `manifest.yaml`.
+- **The manifest rides the image itself.** Every pushed image carries the base64 (no line breaks)
+  of its own `manifest.yaml`, verbatim, as the OCI label `com.runwhen.capability.manifest.v1`.
+  `scripts/manifest_label.py` computes it at build time; `Dockerfile.k8s-discovery` bakes it in via
+  a build arg. The codecollection catalog reads this label straight off the pushed image's config
+  blob -- never a separate build artifact, and never a platform release -- to learn the
+  capability's id, version, and full manifest.
+- **Semver tags are releases.** Pushing a tag matching `v<major>.<minor>.<patch>` publishes the
+  canonical, immutable release image under that tag alone -- no `-<sha7>` suffix (unlike a branch
+  build, where the suffix is what makes an otherwise-moving tag immutable), no `latest`, no branch
+  alias. The catalog's `stable` channel resolves to the highest semver tag published this way.

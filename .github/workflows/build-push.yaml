@@ -40,8 +40,12 @@ name: Build And Push
 #   merge          -- pulls the per-platform digests and uses `docker
 #                     buildx imagetools create` to stitch them into a
 #                     single multi-arch manifest under every tag prepare
-#                     computed, then renders manifest.yaml with the
-#                     resolved digest and uploads it as a build artifact.
+#                     computed. There is no rendered-manifest artifact any
+#                     more: the manifest rides each image itself, as the
+#                     com.runwhen.capability.manifest.v1 label the `build`
+#                     job sets from scripts/manifest_label.py -- the catalog
+#                     reads it straight off the pushed image, never a build
+#                     artifact.
 #
 # `test` runs independently and gates `build`: rwdiscovery's own
 # pytest/ruff suite is cheap and fast, and a broken task host should never
@@ -50,6 +54,10 @@ name: Build And Push
 # Build triggers:
 #   - push to ANY branch  -> produces a CodeCollectionVersion image for that branch
 #   - pull_request to ANY base branch -> produces a "pr-<n>" preview image
+#   - push of a semver tag (v*) -> produces the canonical release image for
+#                                  that tag: no "latest", no branch alias --
+#                                  papi's `stable` channel follows the
+#                                  highest semver tag published this way
 #   - workflow_dispatch  -> manual build
 #
 # We build off non-main branches on purpose: each branch is a candidate CCV
@@ -59,7 +67,10 @@ name: Build And Push
 on:
   push:
     branches:
-      - '**'            # all branches; tag pushes (refs/tags/*) are excluded
+      - '**'            # all branches (refs/heads/*)
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'  # semver release tags only -- see "Semver
+                         # releases" in the `prepare` job's tag computation
     paths-ignore:
       - '**/*.md'
       - 'LICENSE'
@@ -192,34 +203,50 @@ jobs:
           owner_lc="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
 
           # --- canonical immutable tag the catalog uses for discovery ---
-          canonical_tag="${sanitized_ref}-${cc_sha7}"
+          # Semver releases: the tag itself IS the canonical, immutable
+          # identifier -- no "-<sha7>" suffix, unlike a branch build, where
+          # the sha suffix is what makes the tag immutable (the branch
+          # itself keeps moving).
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            canonical_tag="${sanitized_ref}"
+          else
+            canonical_tag="${sanitized_ref}-${cc_sha7}"
+          fi
 
           # --- moving-pointer alias suffixes (re-pointed on every build) ---
-          extra=( "${sanitized_ref}" )
-          case "${{ github.event_name }}" in
-            push|workflow_dispatch)
-              if [ "${{ github.ref_name }}" = "main" ]; then
-                extra+=( "latest" )
-              fi
-              ;;
-            pull_request)
-              extra=( "pr-${{ github.event.pull_request.number }}" )
-              ;;
-          esac
+          # A semver release gets NO alias -- no "latest", no branch
+          # pointer, only the canonical tag above; papi's `stable` channel
+          # resolves to the highest semver tag directly, not through an
+          # alias this workflow maintains.
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            extra=()
+          else
+            extra=( "${sanitized_ref}" )
+            case "${{ github.event_name }}" in
+              push|workflow_dispatch)
+                if [ "${{ github.ref_name }}" = "main" ]; then
+                  extra+=( "latest" )
+                fi
+                ;;
+              pull_request)
+                extra=( "pr-${{ github.event.pull_request.number }}" )
+                ;;
+            esac
+          fi
 
           {
             echo "cc_sha=${cc_sha}"
             echo "sanitized_ref=${sanitized_ref}"
             echo "owner_lc=${owner_lc}"
             echo "canonical_tag=${canonical_tag}"
-            printf 'extra_tags=%s\n' "$(IFS=,; echo "${extra[*]}")"
+            printf 'extra_tags=%s\n' "$(IFS=,; echo "${extra[*]:-}")"
           } >> "$GITHUB_OUTPUT"
 
           {
             echo "## Will publish"
             echo
             echo "- Canonical tag suffix: \`${canonical_tag}\`"
-            echo "- Alias tag suffixes:   $(IFS=,; echo "${extra[*]}")"
+            echo "- Alias tag suffixes:   $(IFS=,; echo "${extra[*]:-}")"
             echo
             echo "- Codecollection sha: \`${cc_sha}\`"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -232,8 +259,13 @@ jobs:
           import sys
           import yaml
 
+          # Keys docs/platform-contract.md §5 and this repo's manifest.yaml
+          # header comment require. No "image": an image cannot know its
+          # own digest -- it rides the image as the
+          # com.runwhen.capability.manifest.v1 label instead (see
+          # Dockerfile.k8s-discovery and scripts/manifest_label.py).
           REQUIRED_KEYS = {
-              "apiVersion", "capability", "version", "description", "image",
+              "apiVersion", "capability", "version", "description",
               "execution", "appliesTo", "needs", "setup", "tasks", "retention",
           }
 
@@ -243,10 +275,18 @@ jobs:
           missing = REQUIRED_KEYS - manifest.keys()
           if missing:
               sys.exit(f"manifest.yaml: missing required keys: {sorted(missing)}")
+          if "image" in manifest:
+              sys.exit("manifest.yaml: must not have an 'image' key -- an image cannot know its own digest")
           if manifest["capability"] != "k8s-discovery":
               sys.exit(f"manifest.yaml: 'capability' must be 'k8s-discovery', got {manifest['capability']!r}")
           if manifest["execution"].get("mode") != "stateless":
               sys.exit(f"manifest.yaml: execution.mode must be 'stateless', got {manifest['execution'].get('mode')!r}")
+          resources = manifest["execution"].get("resources")
+          if resources is not None and not isinstance(resources, dict):
+              sys.exit(f"manifest.yaml: execution.resources must be a mapping, got {type(resources).__name__}")
+          work_size_limit = manifest["execution"].get("workSizeLimit")
+          if work_size_limit is not None and not isinstance(work_size_limit, str):
+              sys.exit(f"manifest.yaml: execution.workSizeLimit must be a string, got {type(work_size_limit).__name__}")
           by_name = {t["name"]: t for t in manifest["tasks"]}
           if by_name.get("discover", {}).get("readOnly") is not False:
               sys.exit("manifest.yaml: discover task must declare readOnly: false")
@@ -405,8 +445,11 @@ jobs:
   # ===========================================================================
   # merge — combine the per-arch digests into the final multi-arch
   # manifest under every tag prepare computed (`docker buildx imagetools
-  # create` is a registry-side metadata operation -- no image rebuild),
-  # then render manifest.yaml with the resolved digest.
+  # create` is a registry-side metadata operation -- no image rebuild).
+  # There is no manifest-rendering step here any more: each per-arch image
+  # already carries its own manifest as the
+  # com.runwhen.capability.manifest.v1 label (set by the `build` job), and
+  # `imagetools create` preserves each child image's config/labels as-is.
   # ===========================================================================
   merge:
     needs: [prepare, build]
@@ -443,9 +486,16 @@ jobs:
           EXTRA_TAGS: ${{ needs.prepare.outputs.extra_tags }}
         run: |
           set -euo pipefail
+          # Build the -t <tag> argv from the canonical tag + this
+          # capability's own alias tags. A semver release has NO alias tags
+          # (see `prepare`'s tag computation), so EXTRA_TAGS is empty --
+          # guard the read/loop rather than iterate a zero-element array
+          # under `set -u`.
           tags=( "${REPO_LC}:${CANONICAL_TAG}" )
-          IFS=',' read -ra EXTRA <<< "${EXTRA_TAGS}"
-          for suffix in "${EXTRA[@]}"; do tags+=( "${REPO_LC}:${suffix}" ); done
+          if [ -n "${EXTRA_TAGS}" ]; then
+            IFS=',' read -ra EXTRA <<< "${EXTRA_TAGS}"
+            for suffix in "${EXTRA[@]}"; do tags+=( "${REPO_LC}:${suffix}" ); done
+          fi
 
           tag_args=()
           for t in "${tags[@]}"; do tag_args+=(-t "$t"); done
@@ -478,36 +528,6 @@ jobs:
             exit 1
           fi
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
-
-      # Per the RunWhen capability manifest format: the shipped image is
-      # digest-pinned, injected at publish time -- a tag is not a version.
-      # This does not commit back to the repo -- it publishes the resolved
-      # manifest as a build artifact for the platform's catalog
-      # registration step to pick up.
-      - name: Render capability manifest with the resolved digest
-        env:
-          REPO_LC: ${{ env.REGISTRY }}/${{ needs.prepare.outputs.owner_lc }}/${{ env.IMAGE_NAME }}
-          DIGEST: ${{ steps.inspect.outputs.digest }}
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/manifest
-          sed -E "s|^image: .*|image: ${REPO_LC}@${DIGEST}|" \
-            capabilities/k8s-discovery/manifest.yaml > /tmp/manifest/manifest.yaml
-          python3 -m pip install --quiet pyyaml
-          python3 - <<'PY'
-          import yaml
-          with open("/tmp/manifest/manifest.yaml") as f:
-              m = yaml.safe_load(f)
-          assert "INJECTED_BY_CI" not in m["image"], f"digest was not injected: {m['image']!r}"
-          print(f"rendered manifest image: {m['image']}")
-          PY
-
-      - name: Upload rendered manifest
-        uses: actions/upload-artifact@v4
-        with:
-          name: capability-manifest-k8s-discovery
-          path: /tmp/manifest/manifest.yaml
-          retention-days: 30
 
       - name: Summary
         env:

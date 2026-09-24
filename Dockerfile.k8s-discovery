@@ -1,0 +1,158 @@
+# rw-discovery-codecollection: the k8s-discovery capability image, not a
+# Robot codebundle image.
+#
+# Image == capability, 1:1 (rw-checks-codecollection's
+# sdk/runwhen_capability/loader.py -- discover_capability_dir's docstring).
+# This repo ships exactly one capability, so unlike rw-checks-codecollection
+# there is only one Dockerfile.
+#
+# It ships:
+#   - the runwhen_capability SDK and its rwtask task host (installed from
+#     rw-checks-codecollection, pinned by commit sha -- see pyproject.toml)
+#   - rwdiscovery/, the Python core (chain, sanitize, rollups, pack, sync)
+#   - the k8s-discovery capability's tasks (capabilities/k8s-discovery/)
+#
+# Dependencies are pinned by one of two mechanisms:
+#   runwhen-capability (the SDK) -- pinned by a full git commit sha in
+#     pyproject.toml, the VCS equivalent of a hash pin. pip's
+#     --require-hashes mode does not support VCS requirements at all, so
+#     this is installed in its OWN, non-hash-checked `pip install` step,
+#     same as rw-checks-codecollection installs its SDK layer unpinned by
+#     hash (`pip install /app`).
+#   kubernetes, jmespath (the two runtime dependencies this capability talks
+#     to the cluster and evaluates expressions through directly) -- pip-
+#     compiled with hashes into requirements.txt (scripts/gen_pip_hashes.sh,
+#     `uv pip compile --generate-hashes`), installed with
+#     `pip install --require-hashes`, which refuses anything whose artifact
+#     hash isn't listed and requires the full transitive closure pinned.
+#
+# No Go binary, no self-install init container, no shell-out tooling: the
+# runner (EXECUTOR-CONTRACT.md) dials `rwtask serve` as a warm executor over
+# plain HTTP/JSON; discovery talks to the Kubernetes API and to papi over
+# HTTP, never a subprocess.
+#
+# Base image pinned by digest -- `python:3.12-slim`, resolved with
+# `docker buildx imagetools inspect python:3.12-slim` on 2026-09-24. This is
+# the multi-arch INDEX digest (covers both linux/amd64 and linux/arm64,
+# which is what CI's build matrix builds), not a single-platform manifest
+# digest -- pinning to one of those would break the other platform's build.
+# Re-resolve and bump both FROM lines together when the base needs an update
+# (a Renovate/Dependabot digest-update rule would keep this current
+# automatically; none is wired up yet).
+ARG BASE_IMAGE=python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
+
+# ---------------------------------------------------------------------------
+# builder -- everything that needs `git` (only the SDK's VCS pip install
+# does) or a C toolchain lives here. Nothing from this stage reaches the
+# final image except the installed Python environment itself.
+# ---------------------------------------------------------------------------
+FROM ${BASE_IMAGE} AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# ca-certificates: TLS for cloning the SDK's pinned commit over HTTPS. git:
+# build-time only, for pip to clone that commit (see the runwhen-capability
+# install step below) -- confined to this stage; see the final stage's
+# header comment for why it must never reach the shipped image.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+
+# An isolated venv, not the base image's system site-packages: the final
+# stage copies this directory verbatim and nothing else, so what's installed
+# here is exactly (and only) what ships.
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
+
+# kubernetes + jmespath, hash-verified. --require-hashes also refuses to
+# install anything not pinned here, so a transitive dependency cannot slip
+# in unhashed.
+COPY requirements.txt /build/requirements.txt
+RUN pip install --no-cache-dir --require-hashes -r /build/requirements.txt \
+    && rm -rf /build
+
+# The SDK, pinned by commit sha in pyproject.toml -- see the header comment
+# above for why this is a separate, non-hash-checked install step.
+WORKDIR /app
+COPY pyproject.toml README.md LICENSE /app/
+COPY rwdiscovery /app/rwdiscovery
+RUN pip install --no-cache-dir --no-deps /app \
+    && pip install --no-cache-dir "runwhen-capability @ git+https://github.com/runwhen-contrib/rw-checks-codecollection.git@010799fb68dbfb90119f71c591b63c736a1158ff"
+
+# ---------------------------------------------------------------------------
+# final -- the shipped image. No git, no C toolchain, no build-time apt
+# state: this capability never shells out (it only ever talks to the
+# Kubernetes API and papi over HTTP), so a runtime git binary would be pure
+# attack surface, not a dependency -- and it's simply not here to find.
+# ---------------------------------------------------------------------------
+FROM ${BASE_IMAGE} AS final
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# ca-certificates only: TLS for the Kubernetes API server and papi.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
+
+WORKDIR /app
+COPY capabilities/k8s-discovery /app/capabilities/k8s-discovery
+COPY packs/kubernetes /app/packs/kubernetes
+ENV RWDISCOVERY_PACK_PATH=/app/packs/kubernetes/pack.yaml
+
+# --- OCI image annotations (opencontainers.org/image-spec) -------------------
+# Standard keys registries and scanners read. REVISION/CREATED are build
+# args because they are the only two values that cannot be known from the
+# source tree alone; CI passes them. CAPABILITY/CAPABILITY_VERSION/
+# MANIFEST_B64 come from scripts/manifest_label.py, so these labels can
+# never drift from the manifest they describe.
+#
+# com.runwhen.capability.manifest.v1 is the one codecollection-registry's
+# catalog (cc-catalog-svc/app/sources/capability.py's
+# CAPABILITY_MANIFEST_LABEL) actually reads back off the pushed image's
+# config blob to discover this capability -- the exact key and base64
+# encoding rw-checks-codecollection#6 established. There is no
+# CI-resolved-digest step any more: the manifest never carries an `image:`
+# field (see manifest.yaml's own header comment), so there is nothing left
+# for such a step to inject.
+ARG REVISION=unknown
+ARG CREATED=unknown
+ARG CAPABILITY=k8s-discovery
+ARG CAPABILITY_VERSION=unknown
+ARG MANIFEST_B64=
+LABEL org.opencontainers.image.title="k8s-discovery" \
+      org.opencontainers.image.description="Kubernetes cluster discovery capability for the RunWhen platform" \
+      org.opencontainers.image.source="https://github.com/runwhen-contrib/rw-discovery-codecollection" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.created="${CREATED}" \
+      io.runwhen.capability="${CAPABILITY}" \
+      io.runwhen.capability.version="${CAPABILITY_VERSION}" \
+      com.runwhen.capability.manifest.v1="${MANIFEST_B64}"
+
+# Non-root. /work is rwtask serve's default --workdir -- every request's
+# scope directory (<workdir>/<scopeId>/) is created and wiped under it,
+# including the request-scoped kubeconfig temp file (credentials.py), so
+# it's the one directory this user needs to write.
+RUN useradd --create-home --uid 1000 --shell /usr/sbin/nologin runwhen \
+    && mkdir -p /work \
+    && chown -R runwhen:runwhen /work /app
+USER runwhen
+
+# rwtask's argv IS the container command -- no Robot runtime, nothing to
+# reset. ENTRYPOINT [] is kept explicit so `docker run <image> <anything>`
+# never surprises anyone who expects the rw-base-runtime convention from
+# this org's other collections.
+#
+# --capability-dir is baked in explicitly rather than left to
+# discover_capability_dir's default: this image's own argv must never rely
+# on "there happens to be exactly one capabilities/*/manifest.yaml" being
+# true -- that auto-discovery stays a local-dev convenience only (see
+# `rwtask run`, README.md).
+ENTRYPOINT []
+CMD ["rwtask", "serve", "--capability-dir", "/app/capabilities/k8s-discovery"]

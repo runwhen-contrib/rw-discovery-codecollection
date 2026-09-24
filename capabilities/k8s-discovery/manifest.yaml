@@ -62,15 +62,21 @@ tasks:
         schema: ./schemas/discovery_summary.json
 
   - name: inspect
-    description: Get or describe one Kubernetes object, read-only, no shell
+    description: Get, describe or tail the logs of one Kubernetes object, read-only, no shell
     readOnly: true
     inputs:
-      clusterName: { from: request }
-      kind:        { from: request }
-      name:        { from: request }
-      namespace:   { from: request, optional: true }
-      apiVersion:  { from: request, optional: true }
-      mode:        { from: request }               # "get" | "describe"
+      clusterName:  { from: request }
+      kind:         { from: request }
+      name:         { from: request }
+      namespace:    { from: request, optional: true }
+      apiVersion:   { from: request, optional: true }
+      mode:         { from: request }               # "get" | "describe" | "logs"
+      container:    { from: request, optional: true }   # mode "logs" only
+      previous:     { from: request, optional: true }   # mode "logs" only
+      sinceSeconds: { from: request, optional: true }   # mode "logs" only -- default 900, max 86400
+      tailLines:    { from: request, optional: true }   # mode "logs" only -- default 200, max 2000
+      grep:         { from: request, optional: true }   # mode "logs" only -- Python regex, case-insensitive
+      maxPods:      { from: request, optional: true }   # mode "logs" only -- default 3, max 10
     outputs:
       object:
         kind: rw.k8s_object.v1

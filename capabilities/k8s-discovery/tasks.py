@@ -47,6 +47,12 @@ def inspect(
     mode: str,
     namespace: str | None = None,
     api_version: str | None = None,
+    container: str | None = None,
+    previous: bool | None = None,
+    since_seconds: int | None = None,
+    tail_lines: int | None = None,
+    grep: str | None = None,
+    max_pods: int | None = None,
 ):
     result = inspect_lib.run_inspect(
         kubeconfig_yaml=ctx.credential("kubeconfig"),
@@ -57,5 +63,11 @@ def inspect(
         api_version=api_version,
         mode=mode,
         workdir=ctx.workdir,
+        container=container,
+        previous=previous or False,
+        since_seconds=since_seconds,
+        tail_lines=tail_lines,
+        grep=grep,
+        max_pods=max_pods,
     )
     return {"object": result}

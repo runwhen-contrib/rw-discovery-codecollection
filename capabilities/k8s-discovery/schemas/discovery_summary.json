@@ -51,6 +51,62 @@
       },
       "title": "DiscoveryPartitionCounts",
       "type": "object"
+    },
+    "LogSampleSummary": {
+      "description": "The error-log sampling phase's own summary (log-patterns-v0\nplatform-contract \u00a71.2) -- run once, best-effort, after the commit.\n`error` is set only when the phase itself failed (D3: that never fails\nthe run, and every other field here just stays at its zero value).",
+      "properties": {
+        "workloads": {
+          "default": 0,
+          "title": "Workloads",
+          "type": "integer"
+        },
+        "pods": {
+          "default": 0,
+          "title": "Pods",
+          "type": "integer"
+        },
+        "bytes": {
+          "default": 0,
+          "title": "Bytes",
+          "type": "integer"
+        },
+        "groups": {
+          "default": 0,
+          "title": "Groups",
+          "type": "integer"
+        },
+        "forbiddenNamespaces": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Forbiddennamespaces",
+          "type": "array"
+        },
+        "seconds": {
+          "default": 0.0,
+          "title": "Seconds",
+          "type": "number"
+        },
+        "truncated": {
+          "default": false,
+          "title": "Truncated",
+          "type": "boolean"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        }
+      },
+      "title": "LogSampleSummary",
+      "type": "object"
     }
   },
   "description": "Output of the `discover` task -- `rw.discovery_summary.v1`. Bulk\ndata never rides this envelope (it goes straight to papi through the\nsync API, platform-contract \u00a73); this is only the run's own summary.\n\n`rollupSourcesUnavailable` maps a namespace name (or the cluster scope,\nkey `\"\"`) to the rollup source collections (`pod`, `replicaset`,\n`endpointslice`, `job`, `event`, `node`) that came back forbidden/failed\nthis run -- any rollup facet needing one of them was omitted rather than\nreported with a false empty/zero. Capped so a cluster with many\nforbidden namespaces can't bloat this envelope.",
@@ -90,6 +146,9 @@
       },
       "title": "Rollupsourcesunavailable",
       "type": "object"
+    },
+    "logSample": {
+      "$ref": "#/$defs/LogSampleSummary"
     }
   },
   "required": [

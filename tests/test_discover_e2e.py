@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 import responses
 
+from rwdiscovery import logsample
 from rwdiscovery.discover import run_discover
 from rwdiscovery.sync import SyncClientError
 from tests.fakes import FakeK8sClient
@@ -343,6 +344,7 @@ class _FakePapi:
         self.item_batches: list[dict] = []
         self.pushed_items: list[dict] = []
         self.commit_calls: list[dict] = []
+        self.observation_batches: list[dict] = []
 
     def install(self):
         responses.add(
@@ -369,6 +371,25 @@ class _FakePapi:
             callback=self._on_commit,
             content_type="application/json",
         )
+        self.install_log_observations()
+
+    def install_log_observations(self):
+        """Registered separately so tests that build their own route set by
+        hand (rather than calling `install()`) can still opt in -- every
+        test whose fixture reaches the post-commit log-sampling phase needs
+        this, or the unmocked POST would exhaust `SyncClient`'s real
+        (sleeping) retry loop instead of failing fast."""
+        responses.add_callback(
+            responses.POST,
+            f"{API_BASE}/api/v4/workspaces/{WORKSPACE}/log-patterns/observations",
+            callback=self._on_log_observations,
+            content_type="application/json",
+        )
+
+    def _on_log_observations(self, request):
+        body = json.loads(request.body)
+        self.observation_batches.append(body)
+        return (200, {}, json.dumps({"accepted": 0, "newPatterns": 0, "rejected": []}))
 
     def _on_items(self, request):
         body = json.loads(request.body)
@@ -746,6 +767,7 @@ def test_pack_registration_skipped_entries_are_logged_not_fatal(tmp_path: Path, 
         callback=fake_papi._on_commit,
         content_type="application/json",
     )
+    fake_papi.install_log_observations()
 
     with caplog.at_level(logging.WARNING, logger="rwdiscovery.sync"):
         summary = _run(_build_fake_cluster(), tmp_path)
@@ -808,6 +830,7 @@ def test_rejected_item_fails_its_partition_and_is_never_swept(tmp_path: Path):
         callback=fake_papi._on_commit,
         content_type="application/json",
     )
+    fake_papi.install_log_observations()
 
     _run(_build_fake_cluster(), tmp_path)
 
@@ -1165,6 +1188,99 @@ def test_rollup_source_reads_reported_as_ordinary_commit_partitions(tmp_path: Pa
     # never pushed as items, complete partition or not
     pushed_types = {i["identity"]["chain"][-1]["type"] for i in fake_papi.pushed_items}
     assert pushed_types.isdisjoint({"pod", "replicaset", "endpointslice", "event"})
+
+
+# --- log sampling phase (log-patterns-v0 platform-contract §1) --------------
+
+
+def _fake_cluster_for_log_sampling() -> FakeK8sClient:
+    """`_build_fake_cluster()`'s pods carry no container `name` (only
+    `restartCount`/`imageID`) -- fine for the rollup tests, but the
+    sampler needs a real container name to read a log for. Both replicas
+    get the same canned error line so the test doesn't depend on which one
+    `choose_pod`'s run-time rotation happens to pick."""
+    fake_k8s = _build_fake_cluster()
+    namespace = "acme-payments"
+    for pod in fake_k8s.pages[f"/api/v1/namespaces/{namespace}/pods"][0]["items"]:
+        for container_status in pod["status"]["containerStatuses"]:
+            container_status["name"] = "api"
+        pod_name = pod["metadata"]["name"]
+        fake_k8s.text[f"/api/v1/namespaces/{namespace}/pods/{pod_name}/log"] = "ERROR disk full\n"
+    return fake_k8s
+
+
+@responses.activate
+def test_log_sample_observations_are_posted_after_commit_with_correct_chains(tmp_path: Path):
+    fake_papi = _FakePapi()
+    fake_papi.install()
+
+    summary = _run(_fake_cluster_for_log_sampling(), tmp_path)
+
+    assert fake_papi.observation_batches, "expected at least one /log-patterns/observations POST"
+    body = fake_papi.observation_batches[0]
+    assert body["platform"] == "kubernetes"
+    assert body["scopeRoot"] == [{"type": "cluster", "name": "acme-prod-eu"}]
+
+    deployment_workload = next(w for w in body["workloads"] if w["chain"][-1]["name"] == "acme-api")
+    assert deployment_workload["chain"] == [
+        {"type": "cluster", "name": "acme-prod-eu"},
+        {"type": "namespace", "name": "acme-payments"},
+        {"type": "deployment", "name": "acme-api"},
+    ]
+    assert deployment_workload["status"] == "ok"
+    assert deployment_workload["groups"][0]["masked"] == "ERROR disk full"
+    assert deployment_workload["groups"][0]["count"] == 1
+
+    # Workloads with no error lines this scan are still sent -- the CronJob
+    # here owns no pods in this fixture, but is still reported as scanned.
+    cronjob_workload = next(w for w in body["workloads"] if w["chain"][-1]["name"] == "acme-nightly")
+    assert cronjob_workload["groups"] == []
+
+    assert summary["logSample"]["workloads"] >= 2
+    assert "error" not in summary["logSample"]
+
+
+@responses.activate
+def test_log_sample_phase_exception_does_not_fail_the_run(tmp_path: Path, monkeypatch):
+    """D3: the sampling phase is best-effort -- a bug in it must never
+    fail the run or leave the sync uncommitted."""
+    fake_papi = _FakePapi()
+    fake_papi.install()
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(logsample, "run_log_sample", _boom)
+
+    summary = _run(_fake_cluster_for_log_sampling(), tmp_path)
+
+    assert fake_papi.commit_calls  # the sync itself still committed normally
+    assert summary["logSample"]["error"] == "log sampling failed"
+    assert fake_papi.observation_batches == []
+
+
+@responses.activate
+def test_log_sample_disabled_via_env_flag_skips_sampling(tmp_path: Path, monkeypatch):
+    """`RWDISCOVERY_LOGS_ENABLED=false` -- exercised here via the resolved
+    `logsample.ENABLED` flag it controls, since the module-level constant
+    is read once at import time and re-importing mid-suite isn't
+    practical."""
+    fake_papi = _FakePapi()
+    fake_papi.install()
+    monkeypatch.setattr(logsample, "ENABLED", False)
+
+    summary = _run(_fake_cluster_for_log_sampling(), tmp_path)
+
+    assert summary["logSample"] == {
+        "workloads": 0,
+        "pods": 0,
+        "bytes": 0,
+        "groups": 0,
+        "forbiddenNamespaces": [],
+        "seconds": 0.0,
+        "truncated": False,
+    }
+    assert fake_papi.observation_batches == []
 
 
 @responses.activate

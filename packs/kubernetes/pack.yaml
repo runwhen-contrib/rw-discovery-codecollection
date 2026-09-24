@@ -40,6 +40,13 @@ access:
       description: Identifies the cluster and its version at the start of every run.
       required: true
       native: {nonResourceURLs: ["/version"], verbs: [get]}
+    - id: pod-logs
+      title: Read container logs
+      description: >-
+        Samples recent error lines per workload for the error-pattern catalog,
+        and lets the agent read live logs.
+      required: false
+      native: {apiGroups: [""], resources: ["pods/log"], verbs: [get]}
   featureGroups:
     - id: workloads
       title: Workload inventory
@@ -146,6 +153,13 @@ access:
       description: A CronJob's schedule and the outcomes of its most recent Jobs.
       types: [cronjob, job]
       facets: [k8sCronJob, k8sCronJobRuns]
+      rules: []
+
+    - id: error-patterns
+      title: Error patterns
+      description: A sampled catalog of error lines seen in each workload's logs.
+      types: [deployment, statefulset, daemonset, cronjob, job]
+      facets: []
       rules: []
 
 facetDefinitions:

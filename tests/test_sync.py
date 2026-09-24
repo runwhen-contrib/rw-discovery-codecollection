@@ -415,3 +415,98 @@ def test_put_pack_with_no_skipped_entries_logs_nothing(caplog: pytest.LogCapture
 def test_the_token_never_appears_in_a_repr():
     assert "jwt-token" not in repr(CRED)
     assert "jwt-token" not in repr(_client())
+
+
+# --- log observations (log-patterns-v0 platform-contract §1.2) -------------
+
+
+def _workload(name: str, *, group_count: int = 1) -> dict:
+    return {
+        "chain": [{"type": "cluster", "name": "acme-prod-eu"}, {"type": "deployment", "name": name}],
+        "pod": f"{name}-1",
+        "status": "ok",
+        "bytesRead": 100,
+        "groups": [
+            {
+                "container": "api",
+                "key": f"key-{name}-{i}",
+                "masked": f"ERROR case <NUM> {i}",
+                "count": 1,
+                "firstSeen": "2026-09-25T10:00:00Z",
+                "lastSeen": "2026-09-25T10:00:00Z",
+                "examples": [],
+            }
+            for i in range(group_count)
+        ],
+    }
+
+
+@responses.activate
+def test_post_log_observations_posts_to_the_expected_path():
+    responses.add(
+        responses.POST,
+        "https://papi.acme.internal/api/v4/workspaces/acme-workspace/log-patterns/observations",
+        json={"accepted": 1, "newPatterns": 1, "rejected": []},
+        status=200,
+    )
+    result = _client().post_log_observations({"platform": "kubernetes", "workloads": []})
+    assert result["accepted"] == 1
+    request = responses.calls[0].request
+    assert request.url == "https://papi.acme.internal/api/v4/workspaces/acme-workspace/log-patterns/observations"
+    assert request.headers["Authorization"] == "Bearer jwt-token"
+
+
+@responses.activate
+def test_push_log_observations_chunks_by_group_count():
+    from rwdiscovery.sync import MAX_LOG_OBSERVATION_GROUPS
+
+    bodies: list[dict] = []
+    url = "https://papi.acme.internal/api/v4/workspaces/acme-workspace/log-patterns/observations"
+
+    def _responder(request):
+        bodies.append(json.loads(request.body))
+        return (200, {}, json.dumps({"accepted": 0, "newPatterns": 0, "rejected": []}))
+
+    responses.add_callback(responses.POST, url, callback=_responder, content_type="application/json")
+
+    # One workload just under the cap, one workload with a single group --
+    # the second must spill into its own body rather than push the first
+    # chunk's total over MAX_LOG_OBSERVATION_GROUPS.
+    workloads = [_workload("acme-api", group_count=MAX_LOG_OBSERVATION_GROUPS), _workload("acme-worker")]
+    _client().push_log_observations(cluster_name="acme-prod-eu", workloads=workloads, window_seconds=900)
+
+    assert len(bodies) == 2
+    assert len(bodies[0]["workloads"]) == 1
+    assert bodies[0]["workloads"][0]["chain"][-1]["name"] == "acme-api"
+    assert len(bodies[1]["workloads"]) == 1
+    assert bodies[1]["workloads"][0]["chain"][-1]["name"] == "acme-worker"
+    for body in bodies:
+        assert body["platform"] == "kubernetes"
+        assert body["scopeRoot"] == [{"type": "cluster", "name": "acme-prod-eu"}]
+        assert body["windowSeconds"] == 900
+
+
+@responses.activate
+def test_push_log_observations_sends_workloads_with_no_groups_too():
+    """Workloads with no error lines are still sent -- papi records that
+    the workload was scanned even when nothing errored."""
+    url = "https://papi.acme.internal/api/v4/workspaces/acme-workspace/log-patterns/observations"
+    bodies: list[dict] = []
+
+    def _responder(request):
+        bodies.append(json.loads(request.body))
+        return (200, {}, json.dumps({"accepted": 0, "newPatterns": 0, "rejected": []}))
+
+    responses.add_callback(responses.POST, url, callback=_responder, content_type="application/json")
+
+    empty_workload = _workload("acme-quiet", group_count=0)
+    _client().push_log_observations(cluster_name="acme-prod-eu", workloads=[empty_workload], window_seconds=900)
+
+    assert len(bodies) == 1
+    assert bodies[0]["workloads"][0]["groups"] == []
+
+
+def test_push_log_observations_with_no_workloads_posts_nothing():
+    client = _client()
+    client.push_log_observations(cluster_name="acme-prod-eu", workloads=[], window_seconds=900)
+    # No `responses` registered at all -- would raise ConnectionError if this posted anything.

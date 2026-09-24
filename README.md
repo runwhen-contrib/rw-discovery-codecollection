@@ -65,6 +65,12 @@ interface spelled out precisely.
    breakdown, duration, server version, cluster UID, and which rollup sources (if any) were
    unavailable, keyed by namespace (`""` for the cluster scope). **No bulk data returns through
    the capability's own result** -- everything else goes straight to papi through the sync API.
+7. After the commit above has succeeded, a best-effort **error-log sampling** phase runs: up to one
+   pod per workload (preferring an unhealthy one), a bounded recent window, error-shaped lines
+   only, grouped by a masked key and posted to papi's `/log-patterns/observations` (see
+   `docs/platform-contract.md` §6). Its failure -- or being disabled with
+   `RWDISCOVERY_LOGS_ENABLED=false` -- never changes the run's own outcome; the summary's
+   `logSample` field just reports what it managed.
 
 Any failure after the sync is opened aborts it, rather than leaving it to expire on its own lease.
 
@@ -80,18 +86,23 @@ Any failure after the sync is opened aborts it, rather than leaving it to expire
 
 ### What `inspect` does
 
-`get` or `describe` exactly one object, read-only, no shell:
+`get`, `describe` or `logs` for exactly one object, read-only, no shell:
 
 - resolves the object's real API plural via discovery (targeted to one group/version when
   `apiVersion` is given, a full discovery sweep otherwise);
 - fetches it, and sanitizes it through the **same** `rwdiscovery.sanitize` module `discover` uses
-  -- there is no side door for a Secret's data to leak through this path;
+  -- there is no side door for a Secret's data to leak through this path (`logs` mode is the one
+  exception: raw log lines are never sanitized -- see `docs/platform-contract.md` §6);
 - computes its `path` with the same chain-building rules `discover` uses (a local, read-only
   mirror of papi's path grammar -- see `rwdiscovery/path.py`'s docstring for why papi's own
   minting isn't called here);
 - in `describe` mode, also fetches events involving the object and renders a plain-text summary
   (`rwdiscovery/describe_render.py`) -- built from the sanitized document, never a `kubectl
-  describe` shell-out, since this capability has no shell access to begin with.
+  describe` shell-out, since this capability has no shell access to begin with;
+- in `logs` mode, reads recent logs from up to `maxPods` of the object's pods (a workload's pods
+  via `spec.selector.matchLabels`; a CronJob's via its owned Jobs; a bare `pod` is itself the only
+  candidate), unhealthy pods first -- the agent's bounded `kubectl logs`, confirming what the
+  error-pattern catalog (§6, built by `discover`'s own sampling) already summarized.
 
 ### Inputs (`inspect`)
 
@@ -102,7 +113,13 @@ Any failure after the sync is opened aborts it, rather than leaving it to expire
 | `name` | string | yes |
 | `namespace` | string | no (omit for a cluster-scoped kind) |
 | `apiVersion` | string | no (`"group/version"` or `"v1"` for core; resolved via discovery if omitted) |
-| `mode` | `"get"` \| `"describe"` | yes |
+| `mode` | `"get"` \| `"describe"` \| `"logs"` | yes |
+| `container` | string | no -- `logs` mode only; omit to read every container |
+| `previous` | bool | no -- `logs` mode only |
+| `sinceSeconds` | int | no -- `logs` mode only (default 900, max 86400) |
+| `tailLines` | int | no -- `logs` mode only (default 200, max 2000) |
+| `grep` | string | no -- `logs` mode only; a Python regex, case-insensitive, applied before the tail |
+| `maxPods` | int | no -- `logs` mode only (default 3, max 10) |
 
 ## Credentials
 

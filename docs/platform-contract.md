@@ -260,10 +260,10 @@ outputs. `k8s-discovery` declares three:
 - **`discover`** -- inputs `{clusterName, namespaces?, excludeNamespaces?, configMapValues?,
   overlay?}`; output `summary` (kind `rw.discovery_summary.v1`):
   `{syncId, packDigest, counts, partitions, durationMs, serverVersion, clusterUid,
-  rollupSourcesUnavailable}`. No bulk data ever rides this output -- every discovered resource goes
-  straight to the platform through the sync protocol (§3); this result is only the run's own
-  accounting. It registers the type/facet/rule pack (§2), opens a sync (§3), pushes items with
-  every ancestor pushed before its children, and commits with one partition per `(type,
+  rollupSourcesUnavailable, logSample}`. No bulk data ever rides this output -- every discovered
+  resource goes straight to the platform through the sync protocol (§3); this result is only the
+  run's own accounting. It registers the type/facet/rule pack (§2), opens a sync (§3), pushes
+  items with every ancestor pushed before its children, and commits with one partition per `(type,
   parentPath)` it actually attempted to enumerate. Any failure once the sync is open aborts it,
   rather than leaving it to expire on its own lease. `rollupSourcesUnavailable` maps a namespace
   name (or `""`, the cluster scope) to which of the ephemeral, rollup-only source collections
@@ -271,14 +271,61 @@ outputs. `k8s-discovery` declares three:
   own right, but also read once more here to compute a rollup) came back forbidden or failed this
   run; a rollup facet whose sources are listed there was omitted from every item it would have
   applied to, rather than pushed with a false empty or zero count (the platform keeps the last
-  value it had and ages it into `stale` by the facet's own TTL instead).
+  value it had and ages it into `stale` by the facet's own TTL instead). `logSample` is the
+  error-log sampling phase's own summary (§6) -- always present, all zeros with `error` unset when
+  that phase found nothing to report.
 - **`inspect`** -- inputs `{clusterName, kind, name, namespace?, apiVersion?, mode: "get" |
-  "describe"}`; output `object` (kind `rw.k8s_object.v1`): `{path, found, object?, describe?,
-  events?}`. Declared `readOnly: true` in the manifest: it never writes to the platform's
-  inventory, and never shells out to anything. It computes its `path` using the same chain-
-  building rules `discover` uses, so the two never disagree about a given object's identity.
+  "describe" | "logs", container?, previous?, sinceSeconds?, tailLines?, grep?, maxPods?}`; output
+  `object` (kind `rw.k8s_object.v1`): `{path, found, object?, describe?, events?}`. Declared
+  `readOnly: true` in the manifest: it never writes to the platform's inventory, and never shells
+  out to anything. It computes its `path` using the same chain-building rules `discover` uses, so
+  the two never disagree about a given object's identity. The `container`/`previous`/
+  `sinceSeconds`/`tailLines`/`grep`/`maxPods` inputs apply only to `mode: "logs"` (§6); every other
+  mode ignores them.
 
 Both tasks share the same sanitizer, so nothing an `inspect` caller can read through `get` or
 `describe` differs from what `discover`'s bulk push would already have stored -- see this repo's
 README, "Sanitization policy" section, for the full policy (what is dropped, what is masked, and
-why).
+why). `inspect`'s `logs` mode (§6) is the one exception: raw log lines are never sanitized (D2,
+§6) -- the platform and the runner both execute inside the customer's own environment, so nothing
+leaves it that didn't already.
+
+## 6. Error-log sampling and live log reads
+
+A best-effort phase, run once per `discover` invocation, after that run's own commit (§3) has
+already succeeded -- its failure, or being disabled (`RWDISCOVERY_LOGS_ENABLED=false`), never
+changes the run's outcome or its `counts`/`partitions`. It samples up to one pod per workload
+(Deployment, StatefulSet, DaemonSet, CronJob, Job -- preferring an unhealthy one, otherwise
+rotating by run time, no cursor kept between runs), reads each container's recent log window,
+detects error-shaped lines (ERROR/FATAL/CRITICAL/`panic`, exceptions and stack traces, Python
+tracebacks, klog `E` lines -- no warnings), and groups them by a masked key (timestamps, UUIDs,
+IPs, hex, quoted strings and numbers replaced with placeholders; the raw lines themselves are
+never masked, only the grouping key -- D2: this platform and the runner both execute inside the
+customer's own environment). Lossy by design: a bounded number of pods, bytes and seconds; whatever
+doesn't fit is dropped, never retried, and nothing already recorded is ever deleted because a scan
+saw less this time.
+
+```
+POST /log-patterns/observations
+  {platform, scopeRoot: [chain of the cluster], observedAt, windowSeconds,
+   workloads: [{chain, pod, status: "ok" | "forbidden" | "failed" | "truncated", bytesRead,
+                groups: [{container, key, masked, count, firstSeen, lastSeen,
+                          examples: [{text, pod, at, previous}]}]}]}
+  200 {accepted, newPatterns, rejected: [{chain, reason}]}
+```
+
+Same credential and retry behavior as the sync protocol (§3); the caller chunks so each body stays
+within the platform's per-request caps (at most 500 groups and 5 MB). `chain` is a workload's
+typed containment chain (§1) -- never a path; the platform mints the path and resolves the
+resource, exactly as sync items do. A workload with no error lines this scan is still sent (empty
+`groups`), so the platform's own scan-state record for it still advances.
+
+`inspect`'s `logs` mode is the same read, on demand, for an agent: `kind` is a workload (its pods
+are resolved from `spec.selector.matchLabels`; a CronJob has none of its own, so its pods come
+from its owned Jobs' selectors instead) or a bare `pod`. `object` holds
+`{mode: "logs", pods: [{pod, container, previous, lines, truncated, error}], totalLines,
+truncated}`. `grep` (a Python regex, case-insensitive) filters lines before `tailLines` is taken,
+so the result is the last N *matching* lines, not the last N raw ones; an invalid pattern is
+reported as `object.error`, never raised. Every numeric input is clamped server-side to its stated
+maximum regardless of what was asked for. Hard caps, independent of `discover`'s sampling budgets:
+64 KB of text total across every pod in the response, 2000 characters per line.

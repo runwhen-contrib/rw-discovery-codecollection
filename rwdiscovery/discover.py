@@ -23,12 +23,13 @@ into a failed TaskResult (never a silently-empty summary).
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import credentials
+from . import credentials, logsample
 from .chain import NAMESPACE, ChainItem, build_chain, cluster_chain
 from .connect import read_cluster_uid
 from .enumerate import ApiResource, discover_resources, is_job_owned_by_cronjob
@@ -40,6 +41,8 @@ from .rollup_context import ROLLUP_SOURCE_TYPES, NamespaceRollupContext
 from .rollups import k8s_cluster_rollup
 from .sanitize import SanitizeOptions, sanitize
 from .sync import BatchingPusher, ResourceSyncCredential, SyncClient
+
+logger = logging.getLogger(__name__)
 
 PLATFORM = "kubernetes"
 SOURCE = "k8s-discovery"
@@ -154,6 +157,10 @@ class _Counters:
     # source) -> the rollup source types that were unavailable there this
     # run -- feeds the summary's `rollupSourcesUnavailable`.
     rollup_sources_unavailable: dict[str, list[str]] = field(default_factory=dict)
+    # tuple(chain) -> SamplingTarget, accumulated as workload items stream
+    # past in `_push_everything_else` (never re-listed) -- log-patterns-v0
+    # platform-contract §1.1. Sampled once, after commit, by `run_discover`.
+    sampling_targets: dict[tuple[ChainItem, ...], logsample.SamplingTarget] = field(default_factory=dict)
 
 
 def run_discover(
@@ -242,6 +249,13 @@ def run_discover(
     for partition in counters.partitions:
         status_counts[partition.status] = status_counts.get(partition.status, 0) + 1
 
+    # log-patterns-v0 platform-contract §1.1/D3: a best-effort phase run
+    # only after the commit above has already succeeded -- its failure
+    # (or being disabled) must never change the run's own outcome or
+    # counts, so it is entirely outside the try/except that aborts the
+    # sync, and any exception here is only ever logged.
+    log_sample_summary = _run_log_sample_phase(k8s, sync_client, cluster_name, counters.sampling_targets)
+
     duration_ms = int((time.monotonic() - started) * 1000)
     return {
         "syncId": sync_id,
@@ -261,7 +275,38 @@ def run_discover(
         "serverVersion": server_version,
         "clusterUid": cluster_uid,
         "rollupSourcesUnavailable": _capped_rollup_sources_unavailable(counters.rollup_sources_unavailable),
+        "logSample": log_sample_summary,
     }
+
+
+_EMPTY_LOG_SAMPLE_SUMMARY: dict = {
+    "workloads": 0,
+    "pods": 0,
+    "bytes": 0,
+    "groups": 0,
+    "forbiddenNamespaces": [],
+    "seconds": 0.0,
+    "truncated": False,
+}
+
+
+def _run_log_sample_phase(
+    k8s: K8sClient,
+    sync_client: SyncClient,
+    cluster_name: str,
+    sampling_targets: dict[tuple[ChainItem, ...], logsample.SamplingTarget],
+) -> dict:
+    if not logsample.ENABLED:
+        return dict(_EMPTY_LOG_SAMPLE_SUMMARY)
+    try:
+        result = logsample.run_log_sample(k8s, list(sampling_targets.values()))
+        sync_client.push_log_observations(
+            cluster_name=cluster_name, workloads=result.workloads, window_seconds=logsample.SINCE_SECONDS
+        )
+        return result.summary
+    except Exception:  # noqa: BLE001 -- D3: this phase's failure must never fail the run
+        logger.exception("log sampling failed")
+        return {**_EMPTY_LOG_SAMPLE_SUMMARY, "error": "log sampling failed"}
 
 
 def _capped_rollup_sources_unavailable(by_scope: dict[str, list[str]]) -> dict[str, list[str]]:
@@ -434,7 +479,7 @@ def _get_namespace_or_stub(k8s: K8sClient, name: str) -> dict:
 
 def _fetch_namespace_rollup_sources(
     k8s: K8sClient, resources_by_type: dict[str, ApiResource], namespace: str
-) -> tuple[NamespaceRollupContext, list[tuple[str, Partition]]]:
+) -> tuple[NamespaceRollupContext, list[tuple[str, Partition]], dict[tuple[str, str], list[logsample.PodSampleInfo]]]:
     """Fetches this namespace's rollup source collections once, building the
     `NamespaceRollupContext` `rollups_for` reads from -- and, for the four
     types in `ROLLUP_SOURCE_TYPES` (never pushed as items; `job` gets its own
@@ -442,7 +487,12 @@ def _fetch_namespace_rollup_sources(
     ordinary commit partition for this namespace's read of each: the read
     already happened here regardless, so it is reported the same way any
     other fully-enumerated (type, parentPath) is -- a `complete` partition
-    just sweeps nothing, since nothing of these types is ever stored."""
+    just sweeps nothing, since nothing of these types is ever stored.
+
+    Also returns the same pods/replicasets, re-indexed by owner
+    (`logsample.pods_by_owner_for_sampling`) for the log-sampling phase --
+    computed here, from the same reads, so that phase never re-lists a
+    namespace's pods."""
     unavailable: set[str] = set()
     source_partitions: list[tuple[str, Partition]] = []
 
@@ -460,18 +510,25 @@ def _fetch_namespace_rollup_sources(
             source_partitions.append((type_name, Partition(namespace=namespace, status=status, count=count)))
         return items
 
+    pods = _items("pod")
+    replicasets = _items("replicaset")
+    endpointslices = _items("endpointslice")
+    jobs = _items("job")
+    events = _items("event")
+
     # Built one namespace at a time; `build` keeps only compact rollup values,
     # so these raw lists are garbage the moment it returns.
     ctx = NamespaceRollupContext.build(
         namespace=namespace,
-        pods=_items("pod"),
-        replicasets=_items("replicaset"),
-        endpointslices=_items("endpointslice"),
-        jobs=_items("job"),
-        events=_items("event"),
+        pods=pods,
+        replicasets=replicasets,
+        endpointslices=endpointslices,
+        jobs=jobs,
+        events=events,
         unavailable_sources=unavailable,
     )
-    return ctx, source_partitions
+    pod_sample_info_by_owner = logsample.pods_by_owner_for_sampling(pods, replicasets)
+    return ctx, source_partitions, pod_sample_info_by_owner
 
 
 def _push_everything_else(
@@ -494,9 +551,11 @@ def _push_everything_else(
     for r in resources:
         resources_by_type.setdefault(r.type_spec.type, r)
     rollup_ctx_by_namespace: dict[str, NamespaceRollupContext] = {}
+    pod_sample_info_by_namespace: dict[str, dict[tuple[str, str], list[logsample.PodSampleInfo]]] = {}
     for ns in in_scope_namespaces:
-        ctx, source_partitions = _fetch_namespace_rollup_sources(k8s, resources_by_type, ns)
+        ctx, source_partitions, pod_sample_info_by_owner = _fetch_namespace_rollup_sources(k8s, resources_by_type, ns)
         rollup_ctx_by_namespace[ns] = ctx
+        pod_sample_info_by_namespace[ns] = pod_sample_info_by_owner
         if ctx.unavailable_sources:
             counters.rollup_sources_unavailable[ns] = sorted(ctx.unavailable_sources)
         for type_name, partition in source_partitions:
@@ -513,9 +572,22 @@ def _push_everything_else(
         for event in list_resource(k8s, resource, in_scope_namespaces):
             if isinstance(event, PageEvent):
                 for raw_obj in event.page.items:
-                    if type_name == "job" and is_job_owned_by_cronjob(raw_obj):
-                        continue  # per-object ephemeral exception: a CronJob recreates its Job every run
                     namespace = event.page.namespace
+                    if type_name == "job" and is_job_owned_by_cronjob(raw_obj):
+                        # Per-object ephemeral exception: a CronJob recreates
+                        # its Job every run, so the Job itself is never
+                        # pushed -- but its pods still belong to the
+                        # CronJob's own log-sampling target (D8).
+                        if namespace is not None:
+                            _accumulate_cronjob_owned_job_sampling_target(
+                                counters,
+                                cluster_name,
+                                raw_obj,
+                                namespace,
+                                resources_by_type,
+                                pod_sample_info_by_namespace[namespace],
+                            )
+                        continue
                     chain = build_chain(
                         cluster_name,
                         resource.type_spec,
@@ -527,6 +599,14 @@ def _push_everything_else(
                         uid = (raw_obj.get("metadata") or {}).get("uid", "")
                         name = (raw_obj.get("metadata") or {}).get("name", "")
                         rollups = rollup_ctx_by_namespace[namespace].rollups_for(type_name, uid, name)
+                        if type_name in logsample.SAMPLING_TYPES:
+                            owner_kind = logsample.WORKLOAD_OWNER_KIND.get(type_name)
+                            pods = (
+                                pod_sample_info_by_namespace[namespace].get((owner_kind, uid), [])
+                                if owner_kind is not None
+                                else []  # cronjob: no owner kind of its own -- see the branch above
+                            )
+                            _accumulate_sampling_target(counters, chain, namespace, pods)
                     pusher.add(
                         _build_item(cluster_name, chain, raw_obj, sanitize_options, rollups),
                         partition_key=(type_name, namespace),
@@ -534,3 +614,43 @@ def _push_everything_else(
             elif isinstance(event, PartitionEvent):
                 counters.partitions.append(event.partition)
                 counters.partition_types.append(type_name)
+
+
+def _accumulate_sampling_target(
+    counters: _Counters, chain: list[ChainItem], namespace: str, pods: list[logsample.PodSampleInfo]
+) -> None:
+    """Merges `pods` into this chain's `SamplingTarget`, creating it (even
+    with `pods=[]`) the first time a workload of that chain is seen -- so a
+    workload with no pods right now is still scanned and reported
+    (log-patterns-v0 platform-contract §1.2: workloads with no error lines
+    are still sent)."""
+    key = tuple(chain)
+    target = counters.sampling_targets.get(key)
+    if target is None:
+        target = logsample.SamplingTarget(chain=list(chain), namespace=namespace)
+        counters.sampling_targets[key] = target
+    target.pods.extend(pods)
+
+
+def _accumulate_cronjob_owned_job_sampling_target(
+    counters: _Counters,
+    cluster_name: str,
+    job_obj: dict,
+    namespace: str,
+    resources_by_type: dict[str, ApiResource],
+    pod_sample_info_by_owner: dict[tuple[str, str], list[logsample.PodSampleInfo]],
+) -> None:
+    """A CronJob-owned Job is never pushed as its own item, but its pods
+    still count toward the owning CronJob's log-sampling target -- the
+    Job's own `ownerReferences` names it directly, no indirection needed."""
+    cronjob_resource = resources_by_type.get("cronjob")
+    if cronjob_resource is None:
+        return
+    owner_refs = (job_obj.get("metadata") or {}).get("ownerReferences") or []
+    cronjob_ref = next((ref for ref in owner_refs if ref.get("kind") == "CronJob"), None)
+    if cronjob_ref is None or not cronjob_ref.get("name"):
+        return
+    job_uid = (job_obj.get("metadata") or {}).get("uid", "")
+    pods = pod_sample_info_by_owner.get(("Job", job_uid), [])
+    chain = build_chain(cluster_name, cronjob_resource.type_spec, cronjob_ref["name"], namespace)
+    _accumulate_sampling_target(counters, chain, namespace, pods)

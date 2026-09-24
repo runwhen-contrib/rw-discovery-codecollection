@@ -24,6 +24,9 @@ class FakeK8sClient:
     forbidden: set[str] = field(default_factory=set)
     errors: dict[str, tuple[int, str]] = field(default_factory=dict)
     calls: list[tuple[str, list[tuple[str, str]] | None]] = field(default_factory=list)
+    # Plain-text routes (`get_text` -- pod log reads). Keyed the same way as
+    # `single`/`forbidden`/`errors`, just a disjoint namespace of paths.
+    text: dict[str, str] = field(default_factory=dict)
 
     def get_raw(self, path: str, query_params: list[tuple[str, str]] | None = None) -> dict:
         self.calls.append((path, query_params))
@@ -51,3 +54,14 @@ class FakeK8sClient:
             if exc.status == 404:
                 return None
             raise
+
+    def get_text(self, path: str, query_params: list[tuple[str, str]] | None = None) -> str:
+        self.calls.append((path, query_params))
+        if path in self.forbidden:
+            raise ForbiddenError(path)
+        if path in self.errors:
+            status, reason = self.errors[path]
+            raise ApiError(path, status, reason)
+        if path in self.text:
+            return self.text[path]
+        raise ApiError(path, 404, "Not Found")

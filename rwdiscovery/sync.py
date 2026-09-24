@@ -24,7 +24,9 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 import requests
 
@@ -32,6 +34,13 @@ logger = logging.getLogger(__name__)
 
 MAX_BATCH_ITEMS = 200
 MAX_BATCH_BYTES = 2 * 1024 * 1024
+
+# log-patterns-v0 platform-contract §1.2: each `/log-patterns/observations`
+# body carries at most this many groups (summed across every workload in
+# the body) and at most this many bytes serialized -- comfortably inside
+# papi's stated ceiling (<=500 groups, <=5 MB).
+MAX_LOG_OBSERVATION_GROUPS = 500
+MAX_LOG_OBSERVATION_BYTES = 4 * 1024 * 1024
 
 _RETRYABLE_STATUSES = {500, 502, 503, 504}
 MAX_RETRIES = 4
@@ -196,6 +205,33 @@ class SyncClient:
                 raise SyncConflictError(exc.body.get("syncId", ""), exc.body.get("leaseExpiresAt", "")) from None
             raise
 
+    def post_log_observations(self, body: dict) -> dict:
+        """One `/log-patterns/observations` body (log-patterns-v0
+        platform-contract §1.2) -- posts whatever it's given, same as
+        `put_pack`. `push_log_observations` below is the chunking caller
+        that keeps each body within papi's per-request caps."""
+        return self._request("POST", "/log-patterns/observations", body)
+
+    def push_log_observations(
+        self, *, cluster_name: str, workloads: list[dict], window_seconds: int, platform: str = "kubernetes"
+    ) -> None:
+        """Posts `workloads` (log-patterns-v0 platform-contract §1.2's
+        per-workload shape: `{chain, pod, status, bytesRead, groups}`) in
+        chunks of at most `MAX_LOG_OBSERVATION_GROUPS` groups (summed) and
+        `MAX_LOG_OBSERVATION_BYTES` serialized bytes each. Workloads with no
+        error lines are still sent (empty `groups`) so papi records that
+        they were scanned."""
+        observed_at = datetime.now(UTC).isoformat()
+        for chunk in _chunk_log_observation_workloads(workloads):
+            body = {
+                "platform": platform,
+                "scopeRoot": [{"type": "cluster", "name": cluster_name}],
+                "observedAt": observed_at,
+                "windowSeconds": window_seconds,
+                "workloads": chunk,
+            }
+            self.post_log_observations(body)
+
     def push_items(self, sync_id: str, seq: int, items: list[dict]) -> dict:
         return self._request("POST", f"/resource-syncs/{sync_id}/items", {"seq": seq, "items": items})
 
@@ -273,3 +309,30 @@ class BatchingPusher:
         self._batch = []
         self._batch_partition_keys = []
         self._batch_bytes = 0
+
+
+def _chunk_log_observation_workloads(
+    workloads: list[dict],
+    *,
+    max_groups: int = MAX_LOG_OBSERVATION_GROUPS,
+    max_bytes: int = MAX_LOG_OBSERVATION_BYTES,
+) -> Iterator[list[dict]]:
+    """Greedily packs workloads into chunks of at most `max_groups` groups
+    (summed) and `max_bytes` serialized bytes each. A single workload's own
+    groups already fit comfortably under both caps
+    (`logsample.MAX_GROUPS_PER_CONTAINER` per container), so one is never
+    split across chunks."""
+    chunk: list[dict] = []
+    chunk_groups = 0
+    chunk_bytes = 0
+    for workload in workloads:
+        w_groups = len(workload["groups"])
+        w_bytes = len(json.dumps(workload).encode())
+        if chunk and (chunk_groups + w_groups > max_groups or chunk_bytes + w_bytes > max_bytes):
+            yield chunk
+            chunk, chunk_groups, chunk_bytes = [], 0, 0
+        chunk.append(workload)
+        chunk_groups += w_groups
+        chunk_bytes += w_bytes
+    if chunk:
+        yield chunk

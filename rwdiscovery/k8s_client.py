@@ -88,6 +88,28 @@ class K8sClient:
                 return None
             raise
 
+    def get_text(self, path: str, query_params: list[tuple[str, str]] | None = None) -> str:
+        """Like `get_raw`, but for an endpoint that returns plain text, not
+        JSON -- `pods/{pod}/log` is the only one this capability reads.
+        Raises the same `ForbiddenError`/`ApiError` mapping as `get_raw`."""
+        try:
+            response = self.api.call_api(
+                path,
+                "GET",
+                query_params=query_params or [],
+                header_params={"Accept": "text/plain, */*"},
+                response_type=None,
+                auth_settings=["BearerToken"],
+                _preload_content=False,
+                _return_http_data_only=True,
+            )
+        except ApiException as exc:
+            if exc.status == 403:
+                raise ForbiddenError(path) from exc
+            raise ApiError(path, exc.status, exc.reason or "", _status_body(exc)) from exc
+        data = response.data
+        return data.decode("utf-8", "replace") if isinstance(data, bytes) else str(data)
+
 
 def path_segment(value: str, what: str) -> str:
     """An object or namespace name as one URL path segment. Kubernetes' own

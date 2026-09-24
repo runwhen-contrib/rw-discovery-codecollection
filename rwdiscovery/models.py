@@ -25,6 +25,22 @@ class DiscoveryPartitionCounts(BaseModel):
     forbidden: int = 0
 
 
+class LogSampleSummary(BaseModel):
+    """The error-log sampling phase's own summary (log-patterns-v0
+    platform-contract §1.2) -- run once, best-effort, after the commit.
+    `error` is set only when the phase itself failed (D3: that never fails
+    the run, and every other field here just stays at its zero value)."""
+
+    workloads: int = 0
+    pods: int = 0
+    bytes: int = 0
+    groups: int = 0
+    forbiddenNamespaces: list[str] = Field(default_factory=list)
+    seconds: float = 0.0
+    truncated: bool = False
+    error: str | None = None
+
+
 class DiscoverySummary(BaseModel):
     """Output of the `discover` task -- `rw.discovery_summary.v1`. Bulk
     data never rides this envelope (it goes straight to papi through the
@@ -45,6 +61,7 @@ class DiscoverySummary(BaseModel):
     serverVersion: str
     clusterUid: str
     rollupSourcesUnavailable: dict[str, list[str]] = Field(default_factory=dict)
+    logSample: LogSampleSummary = Field(default_factory=LogSampleSummary)
 
 
 class K8sObjectResult(BaseModel):

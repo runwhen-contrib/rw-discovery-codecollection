@@ -7,6 +7,17 @@ drift from the code. (Here it's rwdiscovery's own output models, the same
 convention rw-checks-codecollection applies to its runwhen_capability
 models.)
 
+Each model carries its own `SCHEMA_VERSION` class attribute (right next to
+the model, so a developer changing its shape sees it) -- this script writes
+`<name>.v<SCHEMA_VERSION>.json`, never overwriting an already-published file.
+A published schema file never changes once committed (see
+docs/platform-contract.md's "versioned, immutable schemas" section and
+scripts/check_schema_immutability.py, which enforces it in CI): bumping a
+model's SCHEMA_VERSION and re-running this script is how a shape change gets
+published -- the old, lower-numbered file is left exactly as it was, and
+`capabilities/k8s-discovery/manifest.yaml`'s `schema:` ref moves to the new
+one.
+
 Usage: python3 scripts/export_schemas.py   (or `make schemas`)
 """
 
@@ -24,10 +35,16 @@ from pydantic import TypeAdapter  # noqa: E402
 from rwdiscovery.models import DiscoverySummary, K8sObjectResult  # noqa: E402
 
 CAPABILITY_DIR = REPO_ROOT / "capabilities" / "k8s-discovery"
-SCHEMAS = {
-    "discovery_summary.json": TypeAdapter(DiscoverySummary).json_schema(),
-    "k8s_object.json": TypeAdapter(K8sObjectResult).json_schema(),
+
+# name -> model. The published filename is derived from each model's own
+# SCHEMA_VERSION below, not hardcoded here, so bumping the version is the
+# only edit a shape change needs.
+_MODELS = {
+    "discovery_summary": DiscoverySummary,
+    "k8s_object": K8sObjectResult,
 }
+
+SCHEMAS = {f"{name}.v{model.SCHEMA_VERSION}.json": TypeAdapter(model).json_schema() for name, model in _MODELS.items()}
 
 
 def main() -> None:

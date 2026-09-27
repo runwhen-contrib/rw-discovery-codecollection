@@ -123,7 +123,13 @@ jobs:
         run: python3 -m pip install --quiet -e ".[dev]"
 
       - name: Verify checked-in schemas match the models
-        run: python3 scripts/export_schemas.py && git diff --exit-code capabilities/k8s-discovery/schemas
+        run: |
+          set -euo pipefail
+          python3 scripts/export_schemas.py
+          if ! git diff --exit-code capabilities/k8s-discovery/schemas; then
+            echo "::error::Checked-in schema file(s) differ from what export_schemas.py generates. If a model's shape changed, bump its SCHEMA_VERSION next to the model in rwdiscovery/models.py instead of editing the file above -- the old, already-published schemas/<name>.v<N>.json must stay untouched; a new version publishes the change." >&2
+            exit 1
+          fi
 
       - name: pytest
         run: python3 -m pytest -q
@@ -151,7 +157,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          # Full history, not the default shallow clone: the schema
+          # immutability check below runs `git show <base>:path` against
+          # either the previous commit on this branch (a push) or the PR's
+          # target branch (fetched explicitly below) -- both need their
+          # commit objects present locally.
+          fetch-depth: 0
 
       - name: Determine push flag
         id: push_flag
@@ -304,6 +315,20 @@ jobs:
           # image build step (both build-args steps compute this again from
           # `steps.labels`, but this runs first and gates the whole matrix).
           python3 scripts/manifest_label.py > /dev/null
+
+      - name: Check published schemas are versioned and immutable
+        run: |
+          set -euo pipefail
+          # A PR's target branch isn't fetched by the checkout above (which
+          # only fetches the ref actually being built), so fetch it here;
+          # a push already has its own prior commits from fetch-depth: 0.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags --depth=0 origin "${{ github.base_ref }}"
+            base="origin/${{ github.base_ref }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          python3 scripts/check_schema_immutability.py --base "${base}"
 
   # ===========================================================================
   # build — parallel native builds, one leg per platform, so each runs on a

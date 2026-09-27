@@ -317,14 +317,27 @@ are the reference implementations this section mirrors):
   blob -- never a separate build artifact, and never a platform release -- to learn the
   capability's id, version, and full manifest.
 - **The output schemas ride the image too.** A task output's `schema:` value (e.g.
-  `./schemas/k8s_object.json`) only names the JSON Schema file, relative to `manifest.yaml`; the
-  file itself does not otherwise leave this repo. A second OCI label,
+  `./schemas/k8s_object.v1.json`) only names the JSON Schema file, relative to `manifest.yaml`;
+  the file itself does not otherwise leave this repo. A second OCI label,
   `com.runwhen.capability.schemas.v1`, carries the base64 of one compact JSON object mapping every
-  referenced schema's normalized path to its parsed contents -- computed by the same
-  `scripts/manifest_label.py`, which fails the build if a referenced schema is missing, invalid
-  JSON, or not a JSON object. This lets the codecollection catalog validate a capability's outputs
-  against the exact schema version that shipped with the image, without a bundled copy of its own
-  that could drift.
+  schema file in the capability's `schemas/` directory (not only the ones the current manifest
+  references -- see "Schema files are versioned and immutable" below), keyed by its normalized
+  path, to its parsed contents -- computed by the same `scripts/manifest_label.py`, which fails
+  the build if a referenced schema is missing, invalid JSON, or not a JSON object. This lets the
+  codecollection catalog validate a capability's outputs against the exact schema version that
+  shipped with the image, without a bundled copy of its own that could drift.
+- **Schema files are versioned and immutable.** Every file under `schemas/` is named
+  `<name>.v<N>.json` (`N` >= 1); anything else fails a naming check. Once committed, a schema file
+  never changes and is never deleted -- a model's shape change adds `<name>.v<N+1>.json` instead,
+  and the manifest's `schema:` ref moves to it; the old file (and every already-published run's
+  result that names it) keeps resolving. `scripts/check_schema_immutability.py` enforces both
+  rules in CI on every push and pull request, comparing the working tree's versioned schema files
+  against the base branch/commit as canonical JSON (so a whitespace-only reformat is not a
+  change). Because the image label carries every version, not only the referenced one, this is
+  purely additive: nothing a consumer already resolved stops working when a new version ships. A
+  schema change that platform consumers must handle differently should also bump the output's
+  `kind` (e.g. `rw.discovery_summary.v1` -> `rw.discovery_summary.v2`) -- a convention for
+  capability authors, not something enforced mechanically.
 - **Semver tags are releases.** Pushing a tag matching `v<major>.<minor>.<patch>` publishes the
   canonical, immutable release image under that tag alone -- no `-<sha7>` suffix (unlike a branch
   build, where the suffix is what makes an otherwise-moving tag immutable), no `latest`, no branch

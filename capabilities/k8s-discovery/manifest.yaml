@@ -74,7 +74,7 @@ tasks:
     outputs:
       summary:
         kind: rw.discovery_summary.v1
-        schema: ./schemas/discovery_summary.json
+        schema: ./schemas/discovery_summary.v1.json
 
   - name: inspect
     description: Get or describe one Kubernetes object, read-only, no shell
@@ -90,7 +90,7 @@ tasks:
     outputs:
       object:
         kind: rw.k8s_object.v1
-        schema: ./schemas/k8s_object.json
+        schema: ./schemas/k8s_object.v1.json
 
 retention:
   pod: on_failure                  # all | on_failure | none

@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
 """Reads capabilities/k8s-discovery/manifest.yaml and prints the values the
 Dockerfile bakes in as OCI labels, so the labels can never drift from the
-manifest they describe -- the image itself carries its own manifest (and the
-JSON Schemas its task outputs reference) as OCI labels, so the catalog can
-read them straight off the pushed image.
+manifest they describe -- the image itself carries its own manifest (and
+every version of the JSON Schemas its task outputs reference) as OCI labels,
+so the catalog can read them straight off the pushed image.
 
-Besides the manifest bytes, this also collects every `tasks[*].outputs.
-<name>.schema` reference in the manifest (e.g. `./schemas/k8s_object.json`),
-resolves it relative to the manifest's own directory, and bundles the parsed
-schemas into one JSON object -- keyed by the reference normalised with
-posixpath.normpath -- that becomes the com.runwhen.capability.schemas.v1
-label. A capability whose manifest references no schema gets an empty value
-(no label content, but the key is still printed). A referenced schema that
-is missing, not valid JSON, not a JSON object, or whose path escapes the
-manifest's directory fails the build rather than shipping a silently
-incomplete label.
+Besides the manifest bytes, this also bundles every file in the capability's
+own `schemas/` directory into one JSON object -- keyed by its path relative
+to the manifest's directory, normalised with posixpath.normpath (e.g.
+`schemas/k8s_object.v1.json`) -- that becomes the com.runwhen.capability.
+schemas.v1 label. That is the capability's whole published schema history,
+not only the versions `manifest.yaml`'s tasks currently reference (see
+docs/platform-contract.md's "versioned, immutable schemas" section): an old
+run's result may still name a schema no task references any more, and the
+label carries it regardless. The build still fails if any `tasks[*].
+outputs.<name>.schema` reference (e.g. `./schemas/k8s_object.v1.json`) is
+missing from the resulting map, is not valid JSON, is not a JSON object, or
+whose path escapes the manifest's own directory -- a capability whose
+manifest references no schema, and has no `schemas/` directory, gets an
+empty value (no label content, but the key is still printed).
 
 The final `image:` digest is a separate story -- it doesn't exist until
 this image has been pushed, so it is resolved by CI *after* the push
@@ -65,14 +69,36 @@ def collect_schema_refs(manifest: dict) -> list[tuple[str, str, str]]:
     return refs
 
 
-def build_schemas_map(manifest: dict, manifest_dir: Path) -> dict[str, dict]:
-    """Resolve every tasks[*].outputs[*].schema reference into {normalised_key: parsed_schema}.
+def _load_schema_object(schema_path: Path, where: str) -> dict:
+    """Parse schema_path as JSON, raising ManifestLabelError (prefixed with `where`) if it's
+    not valid JSON or not a JSON object."""
+    try:
+        parsed = json.loads(schema_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ManifestLabelError(f"{where} is not valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ManifestLabelError(f"{where} must be a JSON object, got {type(parsed).__name__}")
+    return parsed
 
-    Raises ManifestLabelError, naming the offending task/output/path, when a reference is
-    absolute, escapes manifest_dir via a '..' segment, the file is missing, is not valid
-    JSON, or is not a JSON object.
+
+def build_schemas_map(manifest: dict, manifest_dir: Path) -> dict[str, dict]:
+    """Every *.json file under manifest_dir's schemas/ directory, parsed and keyed by its path
+    relative to manifest_dir, normalised with posixpath.normpath (e.g.
+    schemas/k8s_object.v1.json) -- the capability's whole published schema history, not only
+    the versions the manifest currently references.
+
+    Raises ManifestLabelError, naming the offending file, when a schemas/ file is not valid
+    JSON or not a JSON object. Also raises ManifestLabelError, naming the offending
+    task/output/path, when a tasks[*].outputs[*].schema reference is absolute, escapes
+    manifest_dir via a '..' segment, or names a file that isn't in the resulting map.
     """
     schemas: dict[str, dict] = {}
+    schemas_dir = manifest_dir / "schemas"
+    if schemas_dir.is_dir():
+        for schema_path in sorted(schemas_dir.glob("*.json")):
+            key = posixpath.normpath(str(schema_path.relative_to(manifest_dir)))
+            schemas[key] = _load_schema_object(schema_path, f"schema file {schema_path}")
+
     for task_name, output_name, schema_ref in collect_schema_refs(manifest):
         where = f"task {task_name!r} output {output_name!r} (schema: {schema_ref!r})"
         key = posixpath.normpath(schema_ref)
@@ -80,25 +106,21 @@ def build_schemas_map(manifest: dict, manifest_dir: Path) -> dict[str, dict]:
             raise ManifestLabelError(
                 f"{where}: schema path must be relative and stay under the manifest's own directory"
             )
-        schema_path = manifest_dir / key
-        if not schema_path.is_file():
-            raise ManifestLabelError(f"{where}: schema file not found at {schema_path}")
-        try:
-            parsed = json.loads(schema_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ManifestLabelError(f"{where}: schema file {schema_path} is not valid JSON: {exc}") from exc
-        if not isinstance(parsed, dict):
-            raise ManifestLabelError(
-                f"{where}: schema file {schema_path} must be a JSON object, got {type(parsed).__name__}"
-            )
-        schemas[key] = parsed
+        if key not in schemas:
+            # Not picked up by the schemas/ directory sweep above (missing file, or a ref
+            # pointing outside schemas/ entirely) -- validate it directly so a bad reference
+            # still fails the build.
+            schema_path = manifest_dir / key
+            if not schema_path.is_file():
+                raise ManifestLabelError(f"{where}: schema file not found at {schema_path}")
+            schemas[key] = _load_schema_object(schema_path, where)
     return schemas
 
 
 def encode_schemas(schemas: dict[str, dict]) -> str:
     """Base64 (standard alphabet, padded) of the schemas map, compactly serialised with
-    sorted keys so the same schemas always produce the same value. No referenced schemas
-    -> empty string (no label content)."""
+    sorted keys so the same schemas always produce the same value. An empty map (no schemas/
+    directory and no referenced schemas) -> empty string (no label content)."""
     if not schemas:
         return ""
     payload = json.dumps(schemas, sort_keys=True, separators=(",", ":")).encode("utf-8")

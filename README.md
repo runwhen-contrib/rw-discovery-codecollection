@@ -314,12 +314,27 @@ rw-checks-codecollection established (`docs/platform-contract.md` and that repo'
 `manifest.yaml` header comment cite the same contract).
 
 The same image also carries the JSON Schema documents its task outputs reference (`discover`'s
-and `inspect`'s `outputs.<name>.schema`, e.g. `./schemas/k8s_object.json`), as a second OCI label,
-`com.runwhen.capability.schemas.v1`: base64 of one compact JSON object keyed by each schema's
-manifest-relative path, values the schemas themselves. `scripts/manifest_label.py` computes it
-from the same `manifest.yaml`, and fails the build if a referenced schema file is missing, isn't
-valid JSON, or isn't a JSON object. The codecollection catalog reads it the same way it reads the
-manifest label, so a schema change ships with the image, never a separate platform release.
+and `inspect`'s `outputs.<name>.schema`, e.g. `./schemas/k8s_object.v1.json`), as a second OCI
+label, `com.runwhen.capability.schemas.v1`: base64 of one compact JSON object keyed by each
+schema's manifest-relative path, values the schemas themselves. `scripts/manifest_label.py`
+computes it from the same `manifest.yaml`, and fails the build if a referenced schema file is
+missing, isn't valid JSON, or isn't a JSON object. The codecollection catalog reads it the same
+way it reads the manifest label, so a schema change ships with the image, never a separate
+platform release.
+
+**Schema files are versioned and immutable.** Every file in a capability's `schemas/` directory is
+named `<name>.v<N>.json` (`N` >= 1) -- `manifest.yaml`'s `schema:` refs point at a specific
+version. Once committed, a schema file never changes and is never deleted: a model's shape change
+publishes a new `.v<N+1>.json` file instead, and the manifest moves to it -- the old file, and
+whatever already resolved a run's output against it, keeps working. CI
+(`scripts/check_schema_immutability.py`) enforces both the naming rule and the immutability rule
+on every push and pull request, comparing the working tree's `schemas/*.v<N>.json` files against
+the base branch/commit. **The image label carries every version in `schemas/`**, not only the
+ones the current manifest references, so a capability's whole schema history ships with each
+image and an older run's result stays resolvable. A schema change that platform consumers must
+handle differently should also bump the output's `kind` (e.g. `rw.discovery_summary.v1` ->
+`rw.discovery_summary.v2`) -- this is a convention for capability authors; nothing enforces it
+mechanically.
 
 To inspect the label on a published image without pulling it:
 

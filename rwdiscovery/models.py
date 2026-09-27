@@ -6,7 +6,7 @@ time, the same convention `rw-checks-codecollection` uses for its own
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -38,6 +38,12 @@ class DiscoverySummary(BaseModel):
     reported with a false empty/zero. Capped so a cluster with many
     forbidden namespaces can't bloat this envelope."""
 
+    # Bump when this model's shape changes in a way `export_schemas.py` must publish as a new
+    # file (`schemas/discovery_summary.v<N>.json`) rather than overwrite -- see
+    # docs/platform-contract.md's "versioned, immutable schemas" section. The old file stays;
+    # `manifest.yaml`'s `schema:` ref moves to the new one.
+    SCHEMA_VERSION: ClassVar[int] = 1
+
     syncId: str
     packDigest: str
     counts: DiscoveryCounts
@@ -52,6 +58,9 @@ class K8sObjectResult(BaseModel):
     """Output of the `inspect` task -- `rw.k8s_object.v1`. Exactly one of
     `object` (mode `get`) or `describe`+`events` (mode `describe`) is set
     when `found` is true; all three are null when `found` is false."""
+
+    # See DiscoverySummary.SCHEMA_VERSION above.
+    SCHEMA_VERSION: ClassVar[int] = 1
 
     path: str
     found: bool

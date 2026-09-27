@@ -3,8 +3,9 @@ collection -- the com.runwhen.capability.schemas.v1 label. Mirrors
 tests/test_schemas.py's `sys.path.insert` trick to import the script as a
 module. tests/test_manifest.py covers the real, checked-in manifest end to
 end, through the script's CLI; this file exercises the failure paths
-(missing/invalid schema, an escaping path, no schemas at all) that the real
-manifest never hits.
+(missing/invalid schema, an escaping path, no schemas at all) and the
+"every file in schemas/, not only the referenced ones" behaviour that the
+real manifest never hits (it has no unreferenced, older schema version yet).
 """
 
 from __future__ import annotations
@@ -36,13 +37,16 @@ def _manifest(schema_ref: str | None) -> dict:
 # ---------------------------------------------------------------------------
 # the real, checked-in manifest
 # ---------------------------------------------------------------------------
-def test_real_manifest_schemas_label_has_exactly_the_two_referenced_schemas():
+def test_real_manifest_schemas_label_has_exactly_the_two_published_schemas():
+    # Today schemas/ holds exactly the two versions the manifest references (v1 of each) --
+    # once a schema is versioned past v1, this label grows to carry the older version too; see
+    # test_schemas_map_includes_every_file_in_schemas_dir_not_only_referenced below.
     outputs = compute_outputs()
     decoded = json.loads(base64.b64decode(outputs["schemas_b64"]))
-    assert decoded.keys() == {"schemas/discovery_summary.json", "schemas/k8s_object.json"}
+    assert decoded.keys() == {"schemas/discovery_summary.v1.json", "schemas/k8s_object.v1.json"}
     for filename, key in (
-        ("discovery_summary.json", "schemas/discovery_summary.json"),
-        ("k8s_object.json", "schemas/k8s_object.json"),
+        ("discovery_summary.v1.json", "schemas/discovery_summary.v1.json"),
+        ("k8s_object.v1.json", "schemas/k8s_object.v1.json"),
     ):
         expected = json.loads((CAPABILITY_DIR / "schemas" / filename).read_text())
         assert decoded[key] == expected
@@ -104,3 +108,31 @@ def test_manifest_with_no_schema_refs_gives_an_empty_schemas_map(tmp_path: Path)
 
 def test_empty_schemas_map_encodes_to_the_empty_string():
     assert encode_schemas({}) == ""
+
+
+# ---------------------------------------------------------------------------
+# the label carries every published version, not only the referenced one
+# ---------------------------------------------------------------------------
+def test_schemas_map_includes_every_file_in_schemas_dir_not_only_referenced(tmp_path: Path):
+    schemas_dir = tmp_path / "schemas"
+    schemas_dir.mkdir()
+    (schemas_dir / "athing.v1.json").write_text('{"v": 1}')
+    (schemas_dir / "athing.v2.json").write_text('{"v": 2}')
+    manifest = _manifest("./schemas/athing.v2.json")
+
+    schemas = build_schemas_map(manifest, tmp_path)
+
+    assert schemas.keys() == {"schemas/athing.v1.json", "schemas/athing.v2.json"}
+    assert schemas["schemas/athing.v1.json"] == {"v": 1}
+    assert schemas["schemas/athing.v2.json"] == {"v": 2}
+
+
+def test_unreferenced_invalid_schema_in_the_directory_still_fails_the_build(tmp_path: Path):
+    # Every file in schemas/ is validated, not only the ones a task references -- an unreferenced
+    # but broken file would otherwise ship silently in the label.
+    schemas_dir = tmp_path / "schemas"
+    schemas_dir.mkdir()
+    (schemas_dir / "athing.v1.json").write_text("{not valid json")
+    manifest = _manifest(None)
+    with pytest.raises(ManifestLabelError, match="not valid JSON"):
+        build_schemas_map(manifest, tmp_path)

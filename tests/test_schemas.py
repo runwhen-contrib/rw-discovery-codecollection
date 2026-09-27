@@ -24,10 +24,14 @@ def test_checked_in_schemas_match_the_current_models():
     stale = []
     for filename, schema in SCHEMAS.items():
         path = CAPABILITY_DIR / "schemas" / filename
-        on_disk = json.loads(path.read_text())
-        if on_disk != schema:
+        if not path.is_file() or json.loads(path.read_text()) != schema:
             stale.append(str(path.relative_to(REPO_ROOT)))
-    assert stale == [], f"schema(s) out of date with the models, run `make schemas`: {stale}"
+    assert stale == [], (
+        f"schema(s) out of date with the models, run `make schemas` and commit the result: {stale}. "
+        "If a model's shape changed, bump its SCHEMA_VERSION next to the model in "
+        "rwdiscovery/models.py first -- export_schemas.py then writes a new "
+        "schemas/<name>.v<N>.json; the old, already-published file must stay untouched."
+    )
 
 
 def test_every_manifest_schema_reference_is_registered():

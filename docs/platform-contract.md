@@ -298,12 +298,20 @@ changes the run's outcome or its `counts`/`partitions`. It samples up to one pod
 (Deployment, StatefulSet, DaemonSet, CronJob, Job -- preferring an unhealthy one, otherwise
 rotating by run time, no cursor kept between runs), reads each container's recent log window,
 detects error-shaped lines (ERROR/FATAL/CRITICAL/`panic`, exceptions and stack traces, Python
-tracebacks, klog `E` lines -- no warnings), and groups them by a masked key (timestamps, UUIDs,
-IPs, hex, quoted strings and numbers replaced with placeholders; the raw lines themselves are
-never masked, only the grouping key -- D2: this platform and the runner both execute inside the
-customer's own environment). Lossy by design: a bounded number of pods, bytes and seconds; whatever
-doesn't fit is dropped, never retried, and nothing already recorded is ever deleted because a scan
-saw less this time.
+tracebacks, klog `E` lines -- no warnings), and groups them by a masked key. Masking (timestamps,
+UUIDs, IPs, hex, quoted strings and numbers replaced with placeholders, ANSI escapes stripped,
+file paths replaced with `<PATH>`) only ever shapes the grouping key -- the raw lines themselves
+are never masked (D2: this platform and the runner both execute inside the customer's own
+environment). A stack-trace event (a joined multi-line event, or a single line that starts one on
+its own -- a bare `Traceback`/`panic:`/`Exception in thread` header, or a `<Class>Exception:`/
+`<Class>Error:` line) keeps that exact masked key. Every other, single-line event's masked text is
+folded through Drain-lite instead: a small, deterministic token-template clustering (no
+third-party dependency) that turns a differing token into `<*>` once two lines are similar enough,
+so the group key stays bounded even where the fixed masks above miss a variable. Drain-lite never
+runs across stack traces, which is what keeps two different exception classes from ever
+collapsing into one template. Lossy by design: a bounded number of pods, bytes and seconds;
+whatever doesn't fit is dropped, never retried, and nothing already recorded is ever deleted
+because a scan saw less this time.
 
 ```
 POST /log-patterns/observations

@@ -15,6 +15,7 @@ from rwdiscovery.logsample import (
     LogEvent,
     PodSampleInfo,
     SamplingTarget,
+    build_groups,
     choose_pod,
     detect_error_start,
     group_key,
@@ -81,6 +82,56 @@ def test_detect_python_traceback_start():
     match = detect_error_start("Traceback (most recent call last):")
     assert match is not None
     assert match.is_python_traceback_start is True
+
+
+def test_detect_celery_level_token_followed_by_slash():
+    match = detect_error_start(
+        "[2026-09-27 05:51:37,818: ERROR/ForkPoolWorker-4] Error getting worker stats: connection reset"
+    )
+    assert match is not None
+
+
+def test_detect_nginx_bracketed_error_level():
+    match = detect_error_start(
+        "2026/09/27 06:19:39 [error] 173#173: *1356400 connect() failed (111: Connection refused) "
+        "while connecting to upstream, client: 10.0.0.1, server: app.example.internal, "
+        'request: "GET / HTTP/1.1", upstream: "http://10.0.0.2:8080/"'
+    )
+    assert match is not None
+
+
+def test_nginx_bracketed_warn_notice_info_are_not_detected():
+    assert detect_error_start("2026/09/27 06:19:39 [warn] 173#173: something not an error") is None
+    assert detect_error_start("2026/09/27 06:19:39 [notice] 173#173: worker started") is None
+    assert detect_error_start("2026/09/27 06:19:39 [info] 173#173: reloading config") is None
+
+
+def test_nginx_masked_key_is_stable_across_connection_ids_and_client_ips():
+    line_a = (
+        "2026/09/27 06:19:39 [error] 173#173: *1356400 connect() failed (111: Connection refused) "
+        "while connecting to upstream, client: 10.0.0.1, server: app.example.internal, "
+        'request: "GET / HTTP/1.1", upstream: "http://10.0.0.2:8080/"'
+    )
+    line_b = (
+        "2026/09/27 06:22:04 [error] 981#981: *7788221 connect() failed (111: Connection refused) "
+        "while connecting to upstream, client: 10.9.8.7, server: app.example.internal, "
+        'request: "GET / HTTP/1.1", upstream: "http://10.4.5.6:9090/"'
+    )
+    assert mask(line_a) == mask(line_b)
+    assert group_key(mask(line_a)) == group_key(mask(line_b))
+
+
+def test_detect_zap_style_column_level():
+    match = detect_error_start(
+        '2026-09-27T05:50:18.631Z\terror\tpkg/exporter.go:213\tError exporting metrics\t{"kind": "exporter"}'
+    )
+    assert match is not None
+
+
+def test_zap_style_warn_info_debug_are_not_detected():
+    assert detect_error_start("2026-09-27T05:50:18.631Z\twarn\tpkg/exporter.go:213\tretrying") is None
+    assert detect_error_start("2026-09-27T05:50:18.631Z\tinfo\tpkg/exporter.go:213\tstarted") is None
+    assert detect_error_start("2026-09-27T05:50:18.631Z\tdebug\tpkg/exporter.go:213\tping") is None
 
 
 # --- multi-line join ------------------------------------------------------
@@ -158,6 +209,18 @@ def test_mask_gives_a_different_key_for_a_different_message():
     assert group_key(a) != group_key(b)
 
 
+def test_mask_strips_ansi_escapes_before_masking():
+    assert mask("\x1b[31mERROR\x1b[0m timeout after 3000ms") == "ERROR timeout after <NUM>ms"
+
+
+def test_mask_strips_bare_ansi_escapes_before_masking():
+    assert mask("[1;31mERROR[0m timeout after 3000ms") == "ERROR timeout after <NUM>ms"
+
+
+def test_mask_replaces_file_paths_with_path_placeholder():
+    assert mask("open /var/log/app/out.log: permission denied") == "open <PATH>: permission denied"
+
+
 # --- grouping: examples and per-container caps -----------------------------
 
 
@@ -190,6 +253,49 @@ def test_groups_per_container_are_capped():
     groups, _bytes, status = sample_container(fake, namespace="acme", pod="acme-api-1", container="api", previous=False)
     assert status == "ok"
     assert len(groups) == 50  # MAX_GROUPS_PER_CONTAINER
+
+
+# --- grouping: Drain-lite (platform-contract §7.1/§7.2) --------------------
+
+
+def test_build_groups_uses_drain_lite_to_merge_single_line_variable_words():
+    words = ["timeout", "refused", "reset", "unreachable", "aborted"]
+    lines = [f"ERROR Upload failed for file /data/reports/report-{i}.csv with error {w}" for i, w in enumerate(words)]
+    fake = FakeK8sClient(text={"/api/v1/namespaces/acme/pods/acme-api-1/log": _text_for_lines(lines)})
+    groups, _bytes, status = sample_container(fake, namespace="acme", pod="acme-api-1", container="api", previous=False)
+    assert status == "ok"
+    assert len(groups) == 1
+    assert groups[0]["count"] == 5
+    assert groups[0]["masked"] == "ERROR Upload failed for file <PATH> with error <*>"
+
+
+def test_build_groups_keeps_different_exception_classes_separate_via_trace_bypass():
+    text = (
+        "2026-09-25T10:00:00.000000000Z Traceback (most recent call last):\n"
+        '2026-09-25T10:00:00.100000000Z   File "app.py", line 10, in <module>\n'
+        "2026-09-25T10:00:00.200000000Z     call_papi()\n"
+        "2026-09-25T10:00:00.300000000Z PAPIError: request failed\n"
+        "2026-09-25T10:00:01.000000000Z Traceback (most recent call last):\n"
+        '2026-09-25T10:00:01.100000000Z   File "app.py", line 20, in <module>\n'
+        "2026-09-25T10:00:01.200000000Z     call_http()\n"
+        "2026-09-25T10:00:01.300000000Z HTTPStatusError: 503 from upstream\n"
+    )
+    lines = [strip_timestamp(line) for line in text.splitlines() if line]
+    events = join_events(lines)
+    groups = build_groups(events, container="api", pod="acme-api-1", previous=False)
+    assert len(groups) == 2
+
+
+def test_build_groups_key_is_sha1_of_the_final_template():
+    lines = [
+        "ERROR Upload failed for file /data/r1.csv with error timeout",
+        "ERROR Upload failed for file /data/r2.csv with error refused",
+    ]
+    fake = FakeK8sClient(text={"/api/v1/namespaces/acme/pods/acme-api-1/log": _text_for_lines(lines)})
+    groups, _bytes, status = sample_container(fake, namespace="acme", pod="acme-api-1", container="api", previous=False)
+    assert status == "ok"
+    assert len(groups) == 1
+    assert groups[0]["key"] == group_key(groups[0]["masked"])
 
 
 # --- pod choice -------------------------------------------------------------

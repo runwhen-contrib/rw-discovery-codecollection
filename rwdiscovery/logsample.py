@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 
 from . import rollups as rl
 from .chain import ChainItem
+from .drainlite import Cluster, DrainLite
 from .k8s_client import ApiError, ForbiddenError, K8sClient, path_segment
 
 logger = logging.getLogger(__name__)
@@ -263,7 +264,19 @@ def _try_json_error(text: str) -> str | None:
 
 _LOGFMT_LEVEL_RE = re.compile(r"(?:^|\s)level=(error|fatal|critical|panic)(?:\s|$)")
 _KLOG_ERROR_RE = re.compile(r"^E\d{4}\s")
-_LEVEL_TOKEN_RE = re.compile(r"(?<![A-Za-z])(ERROR|FATAL|CRITICAL|SEVERE|PANIC)(?![A-Za-z])")
+# `(?=...)` rather than a plain `(?![A-Za-z])`: a level word is only "as a
+# word" when what follows it is a separator a real log line would use
+# (Celery's `ERROR/ForkPoolWorker-4`, `[ERROR]`, `ERROR:`, pipe-delimited
+# formats, or plain whitespace/end of line) -- not, say, a digit glued onto
+# an identifier.
+_LEVEL_TOKEN_RE = re.compile(r"(?<![A-Za-z])(ERROR|FATAL|CRITICAL|SEVERE|PANIC)(?=[\s/:\]|]|$)")
+# nginx-style bracketed level, lowercase: `[error]`, `173#173: *1356400 ...`
+# -- `[warn]`/`[notice]`/`[info]` are deliberately not in this set.
+_BRACKET_LEVEL_RE = re.compile(r"(?i)\[(error|crit|alert|emerg|fatal)\]")
+# zap/logrus console-encoder style: a leading timestamp column, then a
+# bare lowercase level column (tab- or space-separated) -- `warn`/`info`/
+# `debug` are deliberately not in this set.
+_COLUMN_LEVEL_RE = re.compile(r"(?i)^\S+[\t ]+(error|err|fatal|crit|critical|panic|dpanic|alert|emerg)(?=[\t ]|$)")
 _PY_TRACEBACK_START_TEXT = "Traceback (most recent call last):"
 _PY_EXCEPTION_LINE_RE = re.compile(r"^\S*(Exception|Error)(:|$)")
 
@@ -285,6 +298,8 @@ def detect_error_start(text: str) -> _StartMatch | None:
         return _StartMatch(seed=text)
     if _KLOG_ERROR_RE.match(text):
         return _StartMatch(seed=text)
+    if _BRACKET_LEVEL_RE.search(text):
+        return _StartMatch(seed=text)
     if "panic:" in text:
         return _StartMatch(seed=text)
     if _PY_TRACEBACK_START_TEXT in text:
@@ -296,6 +311,8 @@ def detect_error_start(text: str) -> _StartMatch | None:
     if "Unhandled exception" in text:
         return _StartMatch(seed=text)
     if _LEVEL_TOKEN_RE.search(text):
+        return _StartMatch(seed=text)
+    if _COLUMN_LEVEL_RE.match(text):
         return _StartMatch(seed=text)
     return None
 
@@ -377,6 +394,16 @@ def join_events(lines: Iterable[tuple[str, str | None]]) -> list[LogEvent]:
 
 # --- masking (grouping key only -- D2: examples stay raw) -------------------
 
+# ANSI colour/style escapes -- the real `\x1b[...m` form, and a "bare" form
+# some log shippers already strip the ESC byte from but leave the rest of
+# the sequence behind (platform-contract §7.2).
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+_BARE_ANSI_ESCAPE_RE = re.compile(r"\[[0-9]+(?:;[0-9]+)*m")
+# A file path: at least two `/segment`s, never preceded by a word char or
+# `<` (so it doesn't reach back into an already-masked placeholder or a
+# bare identifier) -- platform-contract §7.2.
+_PATH_RE = re.compile(r"(?<![\w<])(?:/[\w.@-]+){2,}/?")
+
 _ISO_TS_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b")
 _EPOCH_TS_RE = re.compile(r"\b1\d{9}\b(?:\d{3})?|\b1\d{12}\b")
 _UUID_RE = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
@@ -391,6 +418,9 @@ _WHITESPACE_RE = re.compile(r"\s+")
 def mask(text: str) -> str:
     """Structure-preserving masking used only to build the grouping key
     (D2) -- never applied to the stored `examples[].text`."""
+    text = _ANSI_ESCAPE_RE.sub("", text)
+    text = _BARE_ANSI_ESCAPE_RE.sub("", text)
+    text = _PATH_RE.sub("<PATH>", text)
     text = _ISO_TS_RE.sub("<TS>", text)
     text = _EPOCH_TS_RE.sub("<TS>", text)
     text = _UUID_RE.sub("<UUID>", text)
@@ -442,11 +472,37 @@ def _cap_example_text(text: str, *, is_trace: bool) -> str:
     return encoded[:limit].decode("utf-8", "ignore")
 
 
+_TRACE_START_RE = re.compile(r"^\S*(?:Exception|Error):")
+
+
+def _is_stack_trace_event(event: LogEvent) -> bool:
+    """Whether `event` keeps today's exact masked-key grouping instead of
+    going through Drain-lite (platform-contract §7.2): a joined multi-line
+    event, or a single line that starts a trace on its own -- a bare
+    `Traceback`/`panic:`/`Exception in thread` header, or a
+    `<Class>Exception:`/`<Class>Error:` line. Bypassing Drain-lite here is
+    what keeps two different exception classes from ever landing in the
+    same bucket regardless of the rest of the line."""
+    if len(event.raw_lines) > 1:
+        return True
+    text = event.raw_lines[0]
+    return (
+        _PY_TRACEBACK_START_TEXT in text
+        or "panic:" in text
+        or "Exception in thread" in text
+        or bool(_TRACE_START_RE.match(text))
+    )
+
+
 @dataclass
 class _Group:
     container: str
-    key: str
-    masked: str
+    # Fixed at creation for a stack-trace group (today's exact key); left
+    # `None` for a Drain-lite group, whose `cluster` keeps generalising as
+    # later events join it -- the group's key/masked text are only read
+    # off `cluster.template` once every event has been added.
+    masked: str | None = None
+    cluster: Cluster | None = None
     count: int = 0
     first_seen: str | None = None
     last_seen: str | None = None
@@ -464,19 +520,35 @@ def build_groups(
 ) -> list[dict]:
     """One entry per masked key seen among `events` -- capped at
     `max_groups` (a group past the cap is dropped, never merged into an
-    existing one: lossy by design, budgets win)."""
-    groups: dict[str, _Group] = {}
-    order: list[str] = []
+    existing one: lossy by design, budgets win). Stack-trace events
+    (`_is_stack_trace_event`) keep today's exact masked-key grouping; every
+    other event's masked text is folded through one `DrainLite` per call,
+    so near-identical single-line messages collapse into one group even
+    where the masks above miss a variable (platform-contract §7.1/§7.2).
+    Because a Drain-lite cluster's template can still generalise as later
+    events join it, the key/`masked` text for those groups is only fixed
+    once every event has been added."""
+    drain = DrainLite()
+    groups: dict[tuple[str, object], _Group] = {}
+    order: list[tuple[str, object]] = []
+
     for event in events:
         masked = mask(_masking_seed(event))
-        key = group_key(masked)
-        group = groups.get(key)
+        cluster: Cluster | None = None
+        if _is_stack_trace_event(event):
+            entry_key: tuple[str, object] = ("trace", group_key(masked))
+        else:
+            cluster = drain.add(masked)
+            entry_key = ("cluster", cluster.id)
+
+        group = groups.get(entry_key)
         if group is None:
             if len(groups) >= max_groups:
                 continue
-            group = _Group(container=container, key=key, masked=masked)
-            groups[key] = group
-            order.append(key)
+            group = _Group(container=container, masked=masked if cluster is None else None, cluster=cluster)
+            groups[entry_key] = group
+            order.append(entry_key)
+
         group.count += 1
         ts = event.timestamp
         if ts:
@@ -488,18 +560,23 @@ def build_groups(
             is_trace = len(event.raw_lines) > 1
             text = _cap_example_text("\n".join(event.raw_lines), is_trace=is_trace)
             group.examples.append({"text": text, "pod": pod, "at": ts, "previous": previous})
-    return [
-        {
-            "container": g.container,
-            "key": g.key,
-            "masked": g.masked,
-            "count": g.count,
-            "firstSeen": g.first_seen,
-            "lastSeen": g.last_seen,
-            "examples": g.examples,
-        }
-        for g in (groups[k] for k in order)
-    ]
+
+    result = []
+    for entry_key in order:
+        g = groups[entry_key]
+        final_masked = g.masked if g.cluster is None else g.cluster.template
+        result.append(
+            {
+                "container": g.container,
+                "key": group_key(final_masked),
+                "masked": final_masked,
+                "count": g.count,
+                "firstSeen": g.first_seen,
+                "lastSeen": g.last_seen,
+                "examples": g.examples,
+            }
+        )
+    return result
 
 
 # --- reading one container's log ---------------------------------------

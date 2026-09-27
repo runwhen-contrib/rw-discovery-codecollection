@@ -53,6 +53,8 @@ needs:
 # --- runs once per request, before any task --------------------------------------------
 setup:
   task: connect                    # materialise the kubeconfig, check access, read server version + kube-system UID
+  inputs:
+    context: { from: request, optional: true }  # same named kubeconfig context discover/inspect build their own client from
   outputs:
     serverVersion: { type: string }
     clusterUid:    { type: string }

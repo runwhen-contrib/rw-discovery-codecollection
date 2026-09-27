@@ -12,8 +12,8 @@ from rwdiscovery import inspect as inspect_lib
 
 
 @setup(outputs=["serverVersion", "clusterUid"])
-def connect(ctx: Context):
-    return connect_lib.connect(ctx.credential("kubeconfig"), ctx.workdir)
+def connect(ctx: Context, context: str | None = None):
+    return connect_lib.connect(ctx.credential("kubeconfig"), ctx.workdir, context=context)
 
 
 @task(outputs={"summary": "rw.discovery_summary.v1"})

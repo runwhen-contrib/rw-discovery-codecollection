@@ -259,10 +259,13 @@ profile, which subjects it applies to, the credentials it needs (§4), a `setup`
 once per request before anything else, and its own task list -- each task with typed inputs and
 outputs. `k8s-discovery` declares three:
 
-- **`connect`** (setup) -- runs once per request. Materializes the `kubeconfig` credential into an
-  API client, confirms the cluster is actually reachable, and reads two small facts every
-  following task can reference (`serverVersion`, the cluster's `clusterUid`). If the cluster can't
-  be reached, the whole request fails here, before `discover` or `inspect` ever starts.
+- **`connect`** (setup) -- inputs `{context?}`; runs once per request. Materializes the
+  `kubeconfig` credential into an API client, confirms the cluster is actually reachable, and
+  reads two small facts every following task can reference (`serverVersion`, the cluster's
+  `clusterUid`). If the cluster can't be reached, the whole request fails here, before `discover`
+  or `inspect` ever starts. `context` is the same input those two tasks accept (below) -- it must
+  be given here too, so this precheck actually covers the context the request itself uses rather
+  than always checking the kubeconfig's default current-context.
 - **`discover`** -- inputs `{clusterName, namespaces?, excludeNamespaces?, configMapValues?,
   overlay?, context?}`; output `summary` (kind `rw.discovery_summary.v1`):
   `{syncId, packDigest, counts, partitions, durationMs, serverVersion, clusterUid,

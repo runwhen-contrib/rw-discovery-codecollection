@@ -21,8 +21,13 @@ from .k8s_client import ForbiddenError, K8sClient
 KUBE_SYSTEM_PATH = "/api/v1/namespaces/kube-system"
 
 
-def connect(kubeconfig_yaml: str, workdir: Path) -> dict:
-    api_client = credentials.build_api_client(kubeconfig_yaml, workdir)
+def connect(kubeconfig_yaml: str, workdir: Path, context: str | None = None) -> dict:
+    """`context` selects a named kubeconfig context to build this
+    reachability check from, instead of the kubeconfig's current-context --
+    the same input `discover`/`inspect` accept, so this precheck actually
+    covers the context a scheduled run is configured with, not just the
+    kubeconfig's default one."""
+    api_client = credentials.build_api_client(kubeconfig_yaml, workdir, context=context)
     k8s = K8sClient(api_client)
     version_info = k8s.get_raw("/version")
     return {

@@ -92,6 +92,20 @@ tasks:
         kind: rw.k8s_object.v1
         schema: ./schemas/k8s_object.v1.json
 
+  - name: cli
+    description: Run one allow-listed, read-only kubectl command and return its output
+    readOnly: true
+    invocation: [sync]              # papi calls this synchronously from platform-cli/{name}:run (platform-contract §7); every other task keeps the default [queued]
+    inputs:
+      clusterName:    { from: request }
+      argv:           { from: request }            # list[str] -- already validated by papi; re-validated here regardless
+      maxBytes:       { from: request, optional: true }
+      timeoutSeconds: { from: request, optional: true }
+    outputs:
+      result:
+        kind: rw.cli_result.v1
+        schema: ./schemas/cli_result.v1.json
+
 retention:
   pod: on_failure                  # all | on_failure | none
   result: 30d

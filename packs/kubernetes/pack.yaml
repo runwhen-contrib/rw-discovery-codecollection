@@ -148,6 +148,36 @@ access:
       facets: [k8sCronJob, k8sCronJobRuns]
       rules: []
 
+# platform-contract §7: this pack's kubectl CLI declaration -- verb
+# allow-list, denied flags, sensitive-type output restriction, and output
+# bounds. `rwdiscovery/cli.py` loads this same block (via
+# `packbuild.load_pack_yaml()`) to validate and execute every `cli` task
+# request; papi validates it too, for early, helpful errors, but this
+# capability's own re-validation of every request is authoritative.
+cli:
+  name: kubectl                    # the agent tool / endpoint name; [a-z][a-z0-9-]{1,31}
+  capability: k8s-discovery        # capability + task that executes it
+  task: cli
+  verbs:                           # first one or two tokens of argv; nothing else is allowed
+    - get
+    - describe
+    - logs
+    - top
+    - events
+    - explain
+    - api-resources
+    - api-versions
+    - version
+    - auth can-i
+    - rollout history
+  denyFlags:                       # exact flag or `--flag=...`; short flags as given
+    [--kubeconfig, --server, -s, --token, --as, --as-group, --as-uid, --certificate-authority,
+     --client-certificate, --client-key, --insecure-skip-tls-verify, --username, --password,
+     --cluster, --context, --user, --cache-dir, -f, --filename, -k, --kustomize, --raw,
+     -w, --watch, --watch-only, --follow, -i, --stdin, -t, --tty]
+  sensitiveTypes: [secret, secrets]   # `get` on these allows only the default table, `-o name`, `-o wide`
+  output: {defaultBytes: 16384, maxBytes: 65536, timeoutSeconds: 30, maxTimeoutSeconds: 60}
+
 facetDefinitions:
   # --- generic: apply to every kind, including CRDs nobody has seen ---
   - key: k8sSummary

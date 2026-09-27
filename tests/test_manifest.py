@@ -93,13 +93,26 @@ def test_manifest_declares_readonly_flags_per_capability_contract():
     by_name = {t["name"]: t for t in manifest["tasks"]}
     assert by_name["discover"]["readOnly"] is False
     assert by_name["inspect"]["readOnly"] is True
+    assert by_name["cli"]["readOnly"] is True
+
+
+def test_manifest_invocation_defaults_to_queued_except_cli():
+    """platform-contract §7: `invocation` lists `queued` | `sync`, default
+    `[queued]` -- only a `readOnly: true` task may list `sync`. `cli` is the
+    one task papi calls synchronously; every other task omits the field
+    and keeps the implicit default."""
+    manifest = load_manifest(CAPABILITY_DIR)
+    by_name = {t["name"]: t for t in manifest["tasks"]}
+    assert by_name["cli"]["invocation"] == ["sync"]
+    assert "invocation" not in by_name["discover"]
+    assert "invocation" not in by_name["inspect"]
 
 
 def test_capability_loads_and_registers_setup_and_tasks():
     loaded = load_capability(CAPABILITY_DIR)
     assert loaded.capability_id == "k8s-discovery"
     assert "connect" in loaded.registry.setups
-    assert {"discover", "inspect"} <= loaded.registry.tasks.keys()
+    assert {"discover", "inspect", "cli"} <= loaded.registry.tasks.keys()
 
 
 # The platform's executor host calls each function as `func(ctx, **inputs)`

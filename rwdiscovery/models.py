@@ -67,3 +67,31 @@ class K8sObjectResult(BaseModel):
     object: dict[str, Any] | None = None
     describe: str | None = None
     events: list[dict[str, Any]] | None = Field(default=None)
+
+
+class CliRejection(BaseModel):
+    """Why the `cli` task's argv was refused (platform-contract §7) --
+    never raised, always carried on `CliResult.rejected`."""
+
+    reason: str
+    hint: str
+
+
+class CliResult(BaseModel):
+    """Output of the `cli` task -- `rw.cli_result.v1`. `rejected` is set,
+    and `exitCode` is -1, when `argv` failed validation before anything
+    execs; every other field is the real `kubectl` subprocess result
+    otherwise (`stdout`/`stderr` still present, empty, in the rejected
+    case)."""
+
+    # See DiscoverySummary.SCHEMA_VERSION above.
+    SCHEMA_VERSION: ClassVar[int] = 1
+
+    argv: list[str]
+    exitCode: int
+    stdout: str
+    stderr: str
+    truncated: bool
+    stdoutBytes: int
+    durationMs: int
+    rejected: CliRejection | None = None

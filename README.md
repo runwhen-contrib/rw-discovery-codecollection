@@ -8,8 +8,10 @@ RunWhen CodeCollection for infrastructure discovery -- a **capability image**, b
 This repository ships the **`k8s-discovery`** capability: it enumerates a Kubernetes cluster's
 resources via the API server, sanitizes every object at the source, and pushes them to papi's
 resource inventory over the resource-sync protocol. It runs read-only against the cluster
-(`discover` also writes to papi; `inspect` is entirely read-only) and never shells out to
-`kubectl` or anything else -- every read goes through the Kubernetes API directly.
+(`discover` also writes to papi; `inspect` is entirely read-only), and `discover`/`inspect`/
+`connect` never shell out to anything -- every read goes through the Kubernetes API directly. The
+one exception is **`cli`** (platform-contract §7): one allow-listed, read-only `kubectl` command,
+exec'd for real, no shell, and returned synchronously -- see that section for the full contract.
 
 - **`rwdiscovery/`** -- the Python core: API enumeration and pagination, sanitization, the
   Kubernetes identity/chain rules, rollups over ephemeral objects, the pack builder, and the sync
@@ -154,7 +156,13 @@ in-cluster case: a ServiceAccount's own kubeconfig (token or projected cert) tha
 an operator generates for this capability to use. The manifest declares
 `execution.serviceAccountToken: true`, so the platform hands this capability exactly that kind of
 kubeconfig directly -- one pointing at the executor pod's own projected, rotating ServiceAccount
-token and CA -- with nothing for an operator to generate.
+token and CA -- with nothing for an operator to generate. The same limitation applies to the `cli`
+task's own `kubectl` invocation, for the same reason: no cloud-auth plugin binaries ship in the
+image.
+
+The one binary the final stage does ship is `kubectl` itself (**v1.37.1**), fetched and
+sha256-verified per-architecture at build time (`Dockerfile.k8s-discovery`'s `kubectl` stage) --
+used only by the `cli` task above.
 
 ## Sanitization policy
 

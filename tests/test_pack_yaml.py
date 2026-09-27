@@ -122,7 +122,7 @@ def test_builtin_type_specs_cover_the_two_roots_and_every_builtin_kind():
     assert {s.type for s in BUILTIN_TYPES.values()} <= names
 
 
-_STATIC_KEYS = ("name", "version", "platform", "types", "facetDefinitions", "dependencyRules", "access")
+_STATIC_KEYS = ("name", "version", "platform", "types", "facetDefinitions", "dependencyRules", "access", "cli")
 
 
 def test_build_pack_payload_shape_and_digest_stability():
@@ -522,3 +522,12 @@ def test_pack_has_at_most_one_cli_block(pack):
     # loaded value is a single mapping, not a list some other shape would
     # let slip through unnoticed.
     assert isinstance(pack["cli"], dict)
+
+
+def test_build_pack_payload_carries_the_cli_block_in_the_static_part():
+    payload = build_pack_payload()
+    assert payload["cli"]["name"] == "kubectl"
+    assert payload["cli"]["capability"] == "k8s-discovery"
+    # the static part is what the digest covers, so a cli change re-registers the pack
+    static = {k: v for k, v in payload.items() if k not in ("digest", "additiveTypes", "additiveFacetDefinitions")}
+    assert payload["digest"] == compute_digest(static)

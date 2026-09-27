@@ -260,6 +260,10 @@ def build_pack_payload(
     }
     if "access" in pack:
         body["access"] = pack["access"]
+    # `cli` (platform-cli contract §1): the pack's synchronous command surface,
+    # carried verbatim so papi can validate commands before dispatch.
+    if "cli" in pack:
+        body["cli"] = pack["cli"]
     return {
         **body,
         "digest": compute_digest(body),

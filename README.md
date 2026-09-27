@@ -141,7 +141,10 @@ rejected as a `KubeconfigError`, the same class covering any other malformed/uns
 kubeconfig -- never a silent misbehavior. A **static** kubeconfig -- a bearer token or a
 client-cert/key pair inline in the file, no `exec:` block -- works, which covers the common
 in-cluster case: a ServiceAccount's own kubeconfig (token or projected cert) that RunWhen Local or
-an operator generates for this capability to use.
+an operator generates for this capability to use. The manifest declares
+`execution.serviceAccountToken: true`, so the platform hands this capability exactly that kind of
+kubeconfig directly -- one pointing at the executor pod's own projected, rotating ServiceAccount
+token and CA -- with nothing for an operator to generate.
 
 ## Sanitization policy
 

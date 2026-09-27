@@ -233,8 +233,10 @@ never learns a secret's name, or where it is actually stored.
 - **`k8s.kubeconfig`** -- the kubeconfig, as a plain YAML string, for the cluster this capability
   run targets. It is bound the same way any other credential an SLX/automation uses is bound (a
   reference to a workspace-held secret, or to a Kubernetes Secret local to wherever the runner
-  executes); which of those the platform resolves is an implementation detail this capability does
-  not need to know or branch on -- it always receives the same plain string either way.
+  executes) -- or, for a capability whose manifest declares `execution.serviceAccountToken: true`
+  (as this one does), to the executor pod's own ServiceAccount token; which of those the platform
+  resolves is an implementation detail this capability does not need to know or branch on -- it
+  always receives the same plain string either way.
 - **`runwhen.resourceSync`** -- a JSON string: `{"apiBaseUrl", "token", "workspace", "expiresAt"}`.
   The token is a short-lived JWT, minted specifically for this one run, scoped to
   `resources:sync`, and bound to both the workspace and the capability run that requested it. The

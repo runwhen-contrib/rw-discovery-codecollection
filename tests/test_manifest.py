@@ -108,6 +108,7 @@ def test_capability_loads_and_registers_setup_and_tasks():
 # parameter the manifest does not declare can never be supplied.
 _KNOWN_EXECUTION_KEYS = {
     "mode",
+    "serviceAccountToken",
     "maxPodsPerPool",
     "maxConcurrentPerPod",
     "idleTtlSeconds",

@@ -18,6 +18,7 @@ description: Kubernetes cluster discovery -- enumerate, sanitize and sync resour
 # --- generic scheduling knobs; papi forwards these to the runner verbatim -------------
 execution:
   mode: stateless
+  serviceAccountToken: true       # in-cluster discovery authenticates as the pod's own ServiceAccount; the token is only mounted for capabilities that declare this
   maxPodsPerPool: 2
   maxConcurrentPerPod: 4          # inspect calls are small; discover is one long request
   idleTtlSeconds: 900

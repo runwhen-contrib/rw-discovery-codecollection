@@ -317,16 +317,20 @@ jobs:
           python3 scripts/manifest_label.py > /dev/null
 
       - name: Check published schemas are versioned and immutable
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
           # A PR's target branch isn't fetched by the checkout above (which
           # only fetches the ref actually being built), so fetch it here;
           # a push already has its own prior commits from fetch-depth: 0.
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags --depth=0 origin "${{ github.base_ref }}"
-            base="origin/${{ github.base_ref }}"
+          if [ "${EVENT_NAME}" = "pull_request" ]; then
+            git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+            base="origin/${BASE_REF}"
           else
-            base="${{ github.event.before }}"
+            base="${BEFORE_SHA}"
           fi
           python3 scripts/check_schema_immutability.py --base "${base}"
 

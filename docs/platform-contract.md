@@ -236,7 +236,11 @@ never learns a secret's name, or where it is actually stored.
   executes) -- or, for a capability whose manifest declares `execution.serviceAccountToken: true`
   (as this one does), to the executor pod's own ServiceAccount token; which of those the platform
   resolves is an implementation detail this capability does not need to know or branch on -- it
-  always receives the same plain string either way.
+  always receives the same plain string either way. There is no separate, scoped-down discovery
+  credential: this is ordinarily the same kubeconfig a workspace's Kubernetes tasks use, so it is
+  on this capability, not that credential's own RBAC, to guarantee it only ever reads. `discover`
+  and `inspect` both build their API client through `rwdiscovery/k8s_client.py`'s `K8sClient`, the
+  only place this package calls the Kubernetes API, which refuses to issue anything but a `GET`.
 - **`runwhen.resourceSync`** -- a JSON string: `{"apiBaseUrl", "token", "workspace", "expiresAt"}`.
   The token is a short-lived JWT, minted specifically for this one run, scoped to
   `resources:sync`, and bound to both the workspace and the capability run that requested it. The

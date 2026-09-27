@@ -27,6 +27,20 @@ from kubernetes import client
 from kubernetes.client.rest import ApiException
 
 
+class ReadOnlyViolationError(RuntimeError):
+    """Raised if this wrapper is ever asked to issue anything other than a
+    `GET` (decision 7: there is no separate, scoped-down discovery
+    credential -- customers hand this capability the same kubeconfig their
+    Kubernetes tasks use, and it is on this code, not the credential's own
+    RBAC, to guarantee it never writes to the cluster). `get_raw` is the
+    only place this package ever calls the Kubernetes API, and it always
+    passes `"GET"` -- this is the single, load-bearing chokepoint a future
+    edit adding a mutating call can't quietly bypass."""
+
+    def __init__(self, method: str, path: str):
+        super().__init__(f"refusing to issue a {method} request to {path!r}: this capability is read-only")
+
+
 class ForbiddenError(RuntimeError):
     """A 403 -- distinct from a generic ApiError so callers can mark a
     partition `forbidden` rather than `failed` (platform-contract §3)."""
@@ -56,15 +70,25 @@ def _status_body(exc: ApiException) -> dict:
     return body if isinstance(body, dict) else {}
 
 
+#: The only HTTP method this wrapper will ever issue -- see
+#: `ReadOnlyViolationError`.
+_READ_ONLY_METHOD = "GET"
+
+
 @dataclass
 class K8sClient:
     api: client.ApiClient
 
     def get_raw(self, path: str, query_params: list[tuple[str, str]] | None = None) -> dict:
+        return self._get(_READ_ONLY_METHOD, path, query_params)
+
+    def _get(self, method: str, path: str, query_params: list[tuple[str, str]] | None) -> dict:
+        if method != _READ_ONLY_METHOD:
+            raise ReadOnlyViolationError(method, path)
         try:
             response = self.api.call_api(
                 path,
-                "GET",
+                method,
                 query_params=query_params or [],
                 header_params={"Accept": "application/json"},
                 response_type=None,

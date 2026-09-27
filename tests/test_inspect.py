@@ -7,7 +7,8 @@ import pytest
 
 import rwdiscovery.credentials as credentials
 from rwdiscovery.inspect import run_inspect
-from tests.fakes import FakeK8sClient
+from rwdiscovery.k8s_client import K8sClient
+from tests.fakes import FakeK8sClient, RecordingApiClient
 
 
 def _fake_cluster_with_deployment(include_events=True) -> FakeK8sClient:
@@ -220,6 +221,32 @@ def test_inspect_describe_events_are_sanitized_and_filtered_server_side():
     assert "managedFields" not in result["events"][0]["metadata"]
     events_call = next(q for p, q in fake.calls if p.endswith("/events"))
     assert ("fieldSelector", "involvedObject.uid=deploy-uid-1") in events_call
+
+
+def test_inspect_never_issues_a_non_get_request(tmp_path: Path):
+    """Decision 7: this capability is read-only against the cluster no
+    matter what the credential could do. Drives a full `run_inspect`
+    (mode `describe`, which also reads events) through the REAL
+    `K8sClient.get_raw`/`get_object` (not the higher-level `FakeK8sClient`
+    seam every other test in this file uses) via `RecordingApiClient`, and
+    asserts every recorded call used GET."""
+    transport = RecordingApiClient(fake=_fake_cluster_with_deployment())
+
+    result = run_inspect(
+        kubeconfig_yaml="unused",
+        cluster_name="acme-prod-eu",
+        kind="Deployment",
+        name="acme-api",
+        namespace="acme-payments",
+        api_version="apps/v1",
+        mode="describe",
+        workdir=tmp_path,
+        k8s_client=K8sClient(api=transport),
+    )
+
+    assert result["found"] is True
+    assert transport.calls, "the fake transport recorded no calls at all"
+    assert all(method == "GET" for _, method in transport.calls)
 
 
 def test_run_inspect_forwards_context_to_build_api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

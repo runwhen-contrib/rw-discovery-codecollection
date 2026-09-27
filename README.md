@@ -133,6 +133,13 @@ kubeconfig doesn't have fails the task immediately with a `KubeconfigError` nami
 silently falling back to current-context or surfacing a confusing error from deeper in the
 Kubernetes client library.
 
+**Read-only use.** There is no separate, scoped-down discovery credential -- the `kubeconfig` this
+capability is handed is ordinarily the same one a workspace's Kubernetes tasks use, and it is on
+this code, not that credential's own RBAC, to guarantee discovery never writes to the cluster.
+`rwdiscovery/k8s_client.py`'s `K8sClient` is the only place this package ever calls the Kubernetes
+API, and it refuses to issue anything but a `GET` (`ReadOnlyViolationError`) -- there is no code
+path, in `discover` or `inspect`, that can reach a mutating verb. See platform-contract §4.
+
 **Not supported in v1:** a kubeconfig whose auth depends on an **exec credential plugin**
 (`gke-gcloud-auth-plugin`, `aws eks get-token`, `kubelogin`, ...) -- the image ships no shell tools
 and none of those plugin binaries (`Dockerfile.k8s-discovery`'s final stage has no `git`, no cloud

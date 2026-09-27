@@ -16,8 +16,9 @@ import responses
 
 import rwdiscovery.credentials as credentials
 from rwdiscovery.discover import run_discover
+from rwdiscovery.k8s_client import K8sClient
 from rwdiscovery.sync import SyncClientError
-from tests.fakes import FakeK8sClient
+from tests.fakes import FakeK8sClient, RecordingApiClient
 
 API_BASE = "https://papi.acme.internal"
 WORKSPACE = "acme-workspace"
@@ -554,6 +555,33 @@ def test_cluster_name_with_colons_and_slashes_is_percent_encoded_in_every_path(t
     # the item's own path/URN from that chain (platform-contract §1).
     cluster_item = fake_papi.item_by_type_and_name("cluster", cluster_name)
     assert cluster_item["identity"]["chain"] == [{"type": "cluster", "name": cluster_name}]
+
+
+@responses.activate
+def test_discover_never_issues_a_non_get_request(tmp_path: Path):
+    """Decision 7: this capability is read-only against the cluster no
+    matter what the credential could do. Drives a full `run_discover`
+    through the REAL `K8sClient.get_raw` (not the higher-level `FakeK8sClient`
+    seam every other test in this file uses) via `RecordingApiClient`, and
+    asserts every recorded call used GET."""
+    fake_papi = _FakePapi()
+    fake_papi.install()
+    transport = RecordingApiClient(fake=_build_fake_cluster())
+
+    run_discover(
+        kubeconfig_yaml="unused",
+        resource_sync_raw=_resource_sync_credential_raw(),
+        cluster_name="acme-prod-eu",
+        namespaces=None,
+        exclude_namespaces=None,
+        config_map_values="store",
+        overlay=None,
+        workdir=tmp_path,
+        k8s_client=K8sClient(api=transport),
+    )
+
+    assert transport.calls, "the fake transport recorded no calls at all"
+    assert all(method == "GET" for _, method in transport.calls)
 
 
 @responses.activate

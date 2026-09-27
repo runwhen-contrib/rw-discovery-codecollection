@@ -5,7 +5,11 @@ layer, since the only surface those modules touch is `K8sClient.get_raw`.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from types import SimpleNamespace
+
+from kubernetes.client.rest import ApiException
 
 from rwdiscovery.k8s_client import ApiError, ForbiddenError
 
@@ -51,3 +55,30 @@ class FakeK8sClient:
             if exc.status == 404:
                 return None
             raise
+
+
+@dataclass
+class RecordingApiClient:
+    """A stand-in for `kubernetes.client.ApiClient`, at exactly the boundary
+    `K8sClient.get_raw` calls (`call_api`) -- unlike `FakeK8sClient` above
+    (which replaces `K8sClient` itself, the seam every other test in this
+    suite uses), this sits one level lower, so a test can drive a full
+    `run_discover`/`run_inspect` through the REAL `K8sClient.get_raw` and
+    assert on the HTTP method it actually issued (decision 7: this
+    capability must never issue anything but a GET, no matter what the
+    credential itself could do). Wraps a `FakeK8sClient` for its canned
+    responses, but speaks the real transport's shape: an `ApiException` on
+    error, an object with `.data` (raw JSON bytes) on success."""
+
+    fake: FakeK8sClient
+    calls: list[tuple[str, str]] = field(default_factory=list)
+
+    def call_api(self, path, method, query_params=None, **kwargs):
+        self.calls.append((path, method))
+        try:
+            body = self.fake.get_raw(path, query_params)
+        except ForbiddenError as exc:
+            raise ApiException(status=403, reason="Forbidden") from exc
+        except ApiError as exc:
+            raise ApiException(status=exc.status, reason=exc.reason) from exc
+        return SimpleNamespace(data=json.dumps(body).encode())

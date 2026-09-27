@@ -9,8 +9,11 @@ Document shape this module produces (ours to define -- consumed only by our
 own pack.yaml facet/rule JMESPath expressions, never re-served as a literal
 Kubernetes object):
 
-  - `metadata.managedFields` dropped; `kubectl.kubernetes.io/
-    last-applied-configuration` dropped from annotations.
+  - `metadata.managedFields` and `metadata.resourceVersion` dropped;
+    `kubectl.kubernetes.io/last-applied-configuration` dropped from
+    annotations. `resourceVersion` bumps on every write, status-only writes
+    included, so keeping it would change the document hash -- and so the
+    stored document -- on every status refresh even when nothing else moved.
   - `status` split off and returned separately (never inside `document`),
     and walked by the same generic masking/truncation as everything else --
     a CRD's status is operator-written and can carry connection strings.
@@ -63,10 +66,37 @@ MAX_STRING_BYTES = 16 * 1024  # any other string over this size is masked/trunca
 # stripped, as a substring -- an exact-equality check would essentially
 # never fire.
 NARROW_SECRET_KEYS = frozenset(
-    {"password", "passwd", "secret", "token", "apikey", "api_key", "private_key", "credentials"}
+    {
+        "password",
+        "passwd",
+        "passphrase",
+        "secret",
+        "token",
+        "apikey",
+        "api_key",
+        "private_key",
+        "credential",
+        "credentials",
+    }
 )
 _NARROW_SECRET_KEYS_NORMALIZED = frozenset(k.replace("_", "") for k in NARROW_SECRET_KEYS)
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]")
+
+# `pass`, `pwd` and `pw` are common real-world password abbreviations
+# (`MYSQL_PWD`, `DB_PASS`, `SA_PASS`, bare `PASS`/`PWD`) but, unlike every
+# keyword above, they are also the literal tail of ordinary, unrelated
+# words -- `bypass` and `compass` both end in "pass". A substring match (or
+# even a naive endswith on the separator-stripped key) would whole-mask
+# those too. These three are matched only when they are a whole WORD of the
+# key -- split on separators (`_`/`-`/`.`) and camelCase boundaries -- so
+# `bypass` is one word ("bypass"), never two ("by" + "pass"), and never
+# matches, while `DB_PASS` splits into `["db", "pass"]` and does.
+_SHORT_SECRET_WORDS = frozenset({"pass", "pwd", "pw"})
+_WORD_SPLIT_RE = re.compile(r"[^a-zA-Z0-9]+|(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _words(key: str) -> list[str]:
+    return [w.lower() for w in _WORD_SPLIT_RE.split(key) if w]
 
 
 # A key that NAMES an object rather than holding a value -- `secretName`
@@ -82,6 +112,8 @@ def _key_matches_narrow_secret_name(key: str) -> bool:
     normalized = _NON_ALNUM_RE.sub("", key.lower())
     if normalized.endswith(_REFERENCE_KEY_SUFFIXES):
         return False
+    if any(word in _SHORT_SECRET_WORDS for word in _words(key)):
+        return True
     return any(keyword in normalized for keyword in _NARROW_SECRET_KEYS_NORMALIZED)
 
 
@@ -194,7 +226,12 @@ def _line_key_names_a_credential(key: str) -> bool:
     Normalizing away every separator and checking the *tail* instead
     catches `db.password`, `DB_PASSWORD` and `api_key` alike (their
     separator-stripped form ends with a narrow word) while leaving anything
-    merely prefixed or infixed with one alone."""
+    merely prefixed or infixed with one alone. `pass`/`pwd`/`pw` use the
+    same whole-word check `_key_matches_narrow_secret_name` does, for the
+    same bypass/compass reason -- a tail check alone isn't enough for those
+    three (`bypass` and `compass` both end in "pass")."""
+    if any(word in _SHORT_SECRET_WORDS for word in _words(key)):
+        return True
     normalized = _NON_ALNUM_RE.sub("", key.lower())
     return any(normalized.endswith(keyword) for keyword in _NARROW_SECRET_KEYS_NORMALIZED)
 
@@ -288,6 +325,16 @@ def _walk_generic(node: Any, key: str | None = None) -> Any:
 def _strip_common_metadata(metadata: dict) -> dict:
     metadata = dict(metadata)
     metadata.pop("managedFields", None)
+    # `resourceVersion` bumps on every write, including a status-only update
+    # (a Deployment's controller re-stamping `status.observedGeneration`, a
+    # kubelet updating a Pod's conditions) -- keeping it in `document` would
+    # change the content hash, and therefore the stored document, on every
+    # such write even though nothing this pack actually reads changed. papi
+    # holds no Kubernetes-specific knowledge to strip this itself, so it is
+    # dropped here, at the source, instead (platform-contract's document
+    # shape is silent on `resourceVersion` precisely because it never
+    # survives sanitization).
+    metadata.pop("resourceVersion", None)
     annotations = metadata.get("annotations")
     if isinstance(annotations, dict) and _LAST_APPLIED_ANNOTATION in annotations:
         annotations = dict(annotations)

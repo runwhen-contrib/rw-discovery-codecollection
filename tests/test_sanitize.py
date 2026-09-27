@@ -6,6 +6,8 @@ from __future__ import annotations
 import base64
 import hashlib
 
+import pytest
+
 from rwdiscovery.sanitize import (
     SanitizeOptions,
     mask_and_truncate_string,
@@ -22,6 +24,34 @@ def test_drops_managed_fields():
     }
     document, _ = sanitize(obj)
     assert "managedFields" not in document["metadata"]
+
+
+def test_drops_resource_version():
+    """H4: `resourceVersion` bumps on every write, status-only writes
+    included -- keeping it in `document` would change papi's content hash
+    (and so rewrite the stored row) on every status refresh, defeating the
+    'a status refresh never rewrites the document' design goal."""
+    obj = {"kind": "Deployment", "metadata": {"name": "api", "resourceVersion": "12345"}, "spec": {}}
+    document, _ = sanitize(obj)
+    assert "resourceVersion" not in document["metadata"]
+
+
+def test_status_only_resource_version_bump_produces_an_identical_document():
+    """Two otherwise-identical objects differing only in `resourceVersion`
+    (the shape of a pure status-refresh write) must sanitize to the exact
+    same `document` -- proof that hashing the sanitized output, as papi
+    does, no longer sees a status-only write as a change."""
+    base = {
+        "kind": "Deployment",
+        "metadata": {"name": "api", "namespace": "acme-payments"},
+        "spec": {"replicas": 2},
+        "status": {"replicas": 1},
+    }
+    before = {**base, "metadata": {**base["metadata"], "resourceVersion": "100"}}
+    after = {**base, "metadata": {**base["metadata"], "resourceVersion": "101"}}
+    document_before, _ = sanitize(before)
+    document_after, _ = sanitize(after)
+    assert document_before == document_after
 
 
 def test_drops_last_applied_annotation():
@@ -240,6 +270,69 @@ def test_broad_words_are_not_whole_masked():
     by_name = {e["name"]: e["value"] for e in env}
     assert by_name["AUTH_URL"] == "https://auth.acme.internal"
     assert by_name["DB_CONN_STRING"] == "host=acme-db port=5432"
+
+
+@pytest.mark.parametrize(
+    "env_name",
+    ["MYSQL_PWD", "DB_PASS", "PASS", "PWD", "SA_PASS", "DB_PW", "SSH_PASSPHRASE", "CLIENT_CREDENTIAL"],
+)
+def test_env_value_masked_by_short_password_abbreviations(env_name: str):
+    """H5: `pwd`/`pass`/`pw`/`passphrase`/`credential` are as common in the
+    wild as `password`/`passwd` -- `MYSQL_PWD` is MySQL's own canonical
+    password env var."""
+    obj = {
+        "kind": "Deployment",
+        "metadata": {"name": "acme-api", "namespace": "acme-payments"},
+        "spec": {
+            "template": {"spec": {"containers": [{"name": "api", "env": [{"name": env_name, "value": "S3cr3t!"}]}]}}
+        },
+    }
+    document, _ = sanitize(obj)
+    env = document["spec"]["template"]["spec"]["containers"][0]["env"]
+    assert env[0]["value"] == "***MASKED:credential***", env_name
+
+
+@pytest.mark.parametrize("env_name", ["bypass", "compass", "BYPASS_CACHE", "compassHeading"])
+def test_short_abbreviations_do_not_false_positive_on_bypass_or_compass(env_name: str):
+    """H5's false-positive guard: `bypass` and `compass` both end in "pass",
+    but neither is a password -- `pass` must only match as a whole word."""
+    obj = {
+        "kind": "Deployment",
+        "metadata": {"name": "acme-api", "namespace": "acme-payments"},
+        "spec": {
+            "template": {"spec": {"containers": [{"name": "api", "env": [{"name": env_name, "value": "north"}]}]}}
+        },
+    }
+    document, _ = sanitize(obj)
+    env = document["spec"]["template"]["spec"]["containers"][0]["env"]
+    assert env[0]["value"] == "north", env_name
+
+
+def test_configmap_data_key_named_pwd_or_pass_still_whole_masked():
+    """The narrow key-name rule's short abbreviations apply to ConfigMap
+    data keys too, not just env var names -- and still leave a real word
+    that merely ends in "pass" alone."""
+    obj = {
+        "kind": "ConfigMap",
+        "metadata": {"name": "acme-app-config", "namespace": "acme-payments"},
+        "data": {"db.pass": "hunter2", "db.pwd": "hunter2", "bypass": "true", "region": "us-east-1"},
+    }
+    document, _ = sanitize(obj)
+    assert document["data"]["db.pass"] == "***MASKED:credential***"
+    assert document["data"]["db.pwd"] == "***MASKED:credential***"
+    assert document["data"]["bypass"] == "true"
+    assert document["data"]["region"] == "us-east-1"
+
+
+def test_multiline_config_value_masks_short_password_abbreviation_lines():
+    """The `key=value`-inside-a-string rule (`_line_key_names_a_credential`)
+    gets the same short-abbreviation, whole-word treatment as the top-level
+    key rule -- `DB_PASS=` is masked, `BYPASS_CACHE=` (ends in "pass" but
+    isn't one) is not."""
+    blob = "DB_PASS=hunter2\nBYPASS_CACHE=true\n"
+    masked = mask_credential_shapes(blob)
+    assert "DB_PASS=***MASKED:credential***" in masked
+    assert "BYPASS_CACHE=true" in masked
 
 
 def test_value_from_is_kept_untouched():

@@ -344,6 +344,7 @@ class _FakePapi:
         self.item_batches: list[dict] = []
         self.pushed_items: list[dict] = []
         self.commit_calls: list[dict] = []
+        self.open_calls: list[dict] = []
 
     def install(self):
         responses.add(
@@ -352,11 +353,11 @@ class _FakePapi:
             json={"name": "kubernetes", "version": "0.1.0", "digest": "irrelevant", "registered": True, "counts": {}},
             status=200,
         )
-        responses.add(
+        responses.add_callback(
             responses.POST,
             f"{API_BASE}/api/v4/workspaces/{WORKSPACE}/resource-syncs",
-            json={"syncId": "sync-1", "leaseExpiresAt": "2026-09-24T13:00:00Z"},
-            status=201,
+            callback=self._on_open,
+            content_type="application/json",
         )
         responses.add_callback(
             responses.POST,
@@ -370,6 +371,12 @@ class _FakePapi:
             callback=self._on_commit,
             content_type="application/json",
         )
+
+    def _on_open(self, request):
+        body = json.loads(request.body)
+        self.open_calls.append(body)
+        response = {"syncId": "sync-1", "leaseExpiresAt": "2026-09-24T13:00:00Z"}
+        return (201, {}, json.dumps(response))
 
     def _on_items(self, request):
         body = json.loads(request.body)
@@ -507,6 +514,46 @@ def test_discover_end_to_end(tmp_path: Path):
     for partitions in partitions_by_type.values():
         for p in partitions:
             assert p["status"] == "complete"
+
+
+@responses.activate
+def test_cluster_name_with_colons_and_slashes_is_percent_encoded_in_every_path(tmp_path: Path):
+    """Path encoding: an EKS-ARN-style cluster name (`:`/`/` throughout) must
+    produce the exact same path papi's own identity encoder would mint for
+    the same chain (platform-contract §1's `enc()`) -- `scopePath` and every
+    partition's `parentPath` are strings this module builds by hand, so an
+    unencoded `:`/`/` would desync them from papi's own minted paths and
+    `_is_under_scope`-style checks on the platform side would never match."""
+    fake_papi = _FakePapi()
+    fake_papi.install()
+    cluster_name = "arn:aws:eks:us-east-1:123456789012:cluster/prod"
+    encoded_cluster = "arn%3Aaws%3Aeks%3Aus-east-1%3A123456789012%3Acluster%2Fprod"
+
+    run_discover(
+        kubeconfig_yaml="unused",
+        resource_sync_raw=_resource_sync_credential_raw(),
+        cluster_name=cluster_name,
+        namespaces=None,
+        exclude_namespaces=None,
+        config_map_values="store",
+        overlay=None,
+        workdir=tmp_path,
+        k8s_client=_build_fake_cluster(),
+    )
+
+    assert fake_papi.open_calls[0]["scopePath"] == f"kubernetes/clusters/{encoded_cluster}"
+
+    commit_body = fake_papi.commit_calls[0]
+    partitions_by_type = {p["type"]: p for p in commit_body["partitions"]}
+    assert partitions_by_type["namespace"]["parentPath"] == f"kubernetes/clusters/{encoded_cluster}"
+    assert (
+        partitions_by_type["deployment"]["parentPath"]
+        == f"kubernetes/clusters/{encoded_cluster}/namespaces/acme-payments"
+    )
+    # The identity chain itself is unencoded -- papi is the sole minter of
+    # the item's own path/URN from that chain (platform-contract §1).
+    cluster_item = fake_papi.item_by_type_and_name("cluster", cluster_name)
+    assert cluster_item["identity"]["chain"] == [{"type": "cluster", "name": cluster_name}]
 
 
 @responses.activate

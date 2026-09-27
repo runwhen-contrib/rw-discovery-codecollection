@@ -29,13 +29,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import credentials
-from .chain import NAMESPACE, ChainItem, build_chain, cluster_chain
+from .chain import CLUSTER, NAMESPACE, ChainItem, build_chain, cluster_chain
 from .connect import read_cluster_uid
 from .enumerate import ApiResource, discover_resources, is_job_owned_by_cronjob
 from .k8s_client import ApiError, ForbiddenError, K8sClient, path_segment
 from .k8s_client import resource_path as api_resource_path
 from .packbuild import build_pack_payload
 from .paginate import PageEvent, Partition, PartitionEvent, iter_pages, list_resource
+from .path import enc
 from .rollup_context import ROLLUP_SOURCE_TYPES, NamespaceRollupContext
 from .rollups import k8s_cluster_rollup
 from .sanitize import SanitizeOptions, sanitize
@@ -67,7 +68,14 @@ CLUSTER_ROLLUP_REQUIRED_SOURCES: dict[str, tuple[str, ...]] = {"k8sCluster": ("n
 
 
 def scope_path_for(cluster_name: str) -> str:
-    return f"kubernetes/clusters/{cluster_name}"
+    """The cluster's own path, built by hand from the same `enc()` rule
+    papi's identity minter applies (platform-contract §1, `path.py`'s local
+    mirror) -- `scopePath`/`parentPath` are strings THIS module constructs
+    itself (unlike an item's `identity.chain`, which papi mints), so they
+    must already be in papi's canonical, percent-encoded form or a cluster
+    name containing `:`/`/` (an EKS ARN, for instance) would mint a
+    different path than the one this run's own items resolve under."""
+    return f"kubernetes/clusters/{enc(cluster_name, CLUSTER.name_case)}"
 
 
 def _identity(platform: str, chain: list[ChainItem]) -> dict:
@@ -281,7 +289,7 @@ def _capped_rollup_sources_unavailable(by_scope: dict[str, list[str]]) -> dict[s
 def _partition_parent_path(cluster_name: str, partition: Partition) -> str:
     if partition.namespace is None:
         return scope_path_for(cluster_name)
-    return f"{scope_path_for(cluster_name)}/namespaces/{partition.namespace}"
+    return f"{scope_path_for(cluster_name)}/namespaces/{enc(partition.namespace, NAMESPACE.name_case)}"
 
 
 def _commit_partition_entry(

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from runwhen_capability import Context, setup, task
 
+from rwdiscovery import cli as cli_lib
 from rwdiscovery import connect as connect_lib
 from rwdiscovery import discover as discover_lib
 from rwdiscovery import inspect as inspect_lib
@@ -71,3 +72,21 @@ def inspect(
         max_pods=max_pods,
     )
     return {"object": result}
+
+
+@task(outputs={"result": "rw.cli_result.v1"})
+def cli(
+    ctx: Context,
+    cluster_name: str,
+    argv: list[str],
+    max_bytes: int | None = None,
+    timeout_seconds: int | None = None,
+):
+    result = cli_lib.run_cli(
+        kubeconfig_yaml=ctx.credential("kubeconfig"),
+        argv=argv,
+        workdir=ctx.workdir,
+        max_bytes=max_bytes,
+        timeout_seconds=timeout_seconds,
+    )
+    return {"result": result}

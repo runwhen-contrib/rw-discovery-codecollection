@@ -26,10 +26,13 @@
 #     `pip install --require-hashes`, which refuses anything whose artifact
 #     hash isn't listed and requires the full transitive closure pinned.
 #
-# No Go binary, no self-install init container, no shell-out tooling: the
-# runner (EXECUTOR-CONTRACT.md) dials `rwtask serve` as a warm executor over
-# plain HTTP/JSON; discovery talks to the Kubernetes API and to papi over
-# HTTP, never a subprocess.
+# No Go binary, no self-install init container: the runner
+# (EXECUTOR-CONTRACT.md) dials `rwtask serve` as a warm executor over plain
+# HTTP/JSON; `discover`/`inspect`/`connect` talk to the Kubernetes API and to
+# papi over HTTP, never a subprocess. The one exception is `kubectl` itself
+# (platform-contract §7's `cli` task) -- see the `kubectl` build stage below
+# for how it's fetched and verified, and `rwdiscovery/cli.py` for the one
+# place this image ever shells out to anything.
 #
 # Base image pinned by digest -- `python:3.12-slim`, resolved with
 # `docker buildx imagetools inspect python:3.12-slim` on 2026-09-24. This is
@@ -82,10 +85,46 @@ RUN pip install --no-cache-dir --no-deps /app \
     && pip install --no-cache-dir "runwhen-capability @ git+https://github.com/runwhen-contrib/rw-checks-codecollection.git@010799fb68dbfb90119f71c591b63c736a1158ff"
 
 # ---------------------------------------------------------------------------
+# kubectl -- platform-contract §7's `cli` task execs the real binary; fetched
+# here and sha256-verified against the digest dl.k8s.io itself publishes
+# (https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/<arch>/kubectl.sha256),
+# never trusted from a package-manager mirror. `TARGETARCH` is buildx's own
+# automatic per-platform ARG (amd64/arm64 -- CI's build matrix), which is
+# also all `curl`'s URL needs to pick the right binary; only the verified
+# `/kubectl` file crosses into the final stage below, never this stage's own
+# `curl`/apt state.
+#
+# v1.37.1, the latest stable release as of 2026-09-27
+# (https://dl.k8s.io/release/stable.txt) -- bump KUBECTL_VERSION and both
+# KUBECTL_SHA256_* args together; each is that version's own published
+# per-arch digest, independently re-verified against the downloaded binary
+# at pin time.
+# ---------------------------------------------------------------------------
+FROM ${BASE_IMAGE} AS kubectl
+ARG TARGETARCH
+ARG KUBECTL_VERSION=v1.37.1
+ARG KUBECTL_SHA256_AMD64=65691ff77eb6fa44c908b77a1082c9f092c3b9733b5cefabec0d1104890e21a8
+ARG KUBECTL_SHA256_ARM64=ff749f4b78d9c4f1ec87307df9b50119ed819e2094aa9810cb9acffc3286c8c7
+
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && case "${TARGETARCH}" in \
+           amd64) echo "${KUBECTL_SHA256_AMD64}  /kubectl" > /kubectl.sha256 ;; \
+           arm64) echo "${KUBECTL_SHA256_ARM64}  /kubectl" > /kubectl.sha256 ;; \
+           *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL -o /kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
+    && sha256sum -c /kubectl.sha256 \
+    && chmod 0755 /kubectl
+
+# ---------------------------------------------------------------------------
 # final -- the shipped image. No git, no C toolchain, no build-time apt
-# state: this capability never shells out (it only ever talks to the
-# Kubernetes API and papi over HTTP), so a runtime git binary would be pure
-# attack surface, not a dependency -- and it's simply not here to find.
+# state: this capability never shells out to anything of its own choosing
+# (it only ever talks to the Kubernetes API and papi over HTTP) except the
+# one, sha256-pinned `kubectl` binary above, run only by the allow-listed
+# `cli` task (`rwdiscovery/cli.py`) -- so a runtime git binary, or any other
+# shell tool, would be pure attack surface, not a dependency, and none is
+# here to find.
 # ---------------------------------------------------------------------------
 FROM ${BASE_IMAGE} AS final
 
@@ -99,6 +138,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:${PATH}"
+COPY --from=kubectl /kubectl /usr/local/bin/kubectl
 
 WORKDIR /app
 COPY capabilities/k8s-discovery /app/capabilities/k8s-discovery
@@ -130,8 +170,11 @@ LABEL org.opencontainers.image.title="k8s-discovery" \
 
 # Non-root. /work is rwtask serve's default --workdir -- every request's
 # scope directory (<workdir>/<scopeId>/) is created and wiped under it,
-# including the request-scoped kubeconfig temp file (credentials.py), so
-# it's the one directory this user needs to write.
+# including the request-scoped kubeconfig temp file (credentials.py, and
+# cli.py's own copy for the `cli` task's kubectl subprocess), so it's the
+# one directory this user needs to write. /usr/local/bin/kubectl above is
+# 0755 -- world-readable and -executable, so this user can run it without
+# owning it.
 RUN useradd --create-home --uid 1000 --shell /usr/sbin/nologin runwhen \
     && mkdir -p /work \
     && chown -R runwhen:runwhen /work /app

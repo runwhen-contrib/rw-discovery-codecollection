@@ -337,3 +337,79 @@ so the result is the last N *matching* lines, not the last N raw ones; an invali
 reported as `object.error`, never raised. Every numeric input is clamped server-side to its stated
 maximum regardless of what was asked for. Hard caps, independent of `discover`'s sampling budgets:
 64 KB of text total across every pod in the response, 2000 characters per line.
+
+## 7. Platform CLI (`cli` task)
+
+The one place this capability shells out to anything: a single, allow-listed, read-only `kubectl`
+command, run synchronously and returned in the same response -- no `capability_runs` row, nothing
+stored. papi's `POST /api/v4/workspaces/{workspace}/platform-cli/{name}:run` resolves the pack
+whose `cli.name` matches, validates the command, and dispatches it to this capability's `cli` task
+over the stateless-sync runner path; only a structured audit log line and metrics survive the call
+on papi's side.
+
+**The pack's `cli` block** (`packs/kubernetes/pack.yaml`, alongside `access`) is what papi validates
+a request against, and what this capability loads (`packbuild.load_pack_yaml()["cli"]`,
+`rwdiscovery/cli.py`) to re-validate and execute one:
+
+```
+cli  {name, capability, task,
+      verbs: [str], denyFlags: [str], sensitiveTypes: [str],
+      output: {defaultBytes, maxBytes, timeoutSeconds, maxTimeoutSeconds}}
+```
+
+`name` is the agent-facing tool/endpoint name (`^[a-z][a-z0-9-]{1,31}$`); `capability`/`task` name
+which capability and task actually run it (`k8s-discovery`/`cli` here). `verbs` is the closed list
+of first-one-or-two argv tokens a command may start with (`get`, `describe`, `logs`, ..., two-word
+verbs like `auth can-i` and `rollout history`) -- nothing else is a valid command at all. `denyFlags`
+blocks every flag that would let a command escape read-only, cluster-scoped, non-interactive use
+(credential/context overrides, `-f`/`--filename` manifests, `--watch`/`--follow`/`-i`/`-t`).
+`sensitiveTypes` (`secret`, `secrets`) restricts `get` on those types to the default table view,
+`-o name`, or `-o wide` -- never a full object dump. `output` bounds how much a command can ask
+for: `maxBytes`/`maxTimeoutSeconds` are hard ceilings; `defaultBytes`/`timeoutSeconds` apply when a
+request doesn't specify one.
+
+**Validation** (identical rules in papi and here -- papi's own copy exists for early, helpful
+errors; this capability's is authoritative, since it is the one that actually execs anything):
+
+1. Split the command on whitespace (`shlex.split(command, posix=True)`); drop a leading `kubectl`
+   token. An empty result is rejected.
+2. Any shell metacharacter (`| || & && ; > >> < $(` or a backtick) anywhere in a token -- as the
+   whole token, or glued to a word with no space around it -- is rejected: this is one `kubectl`
+   invocation per call, never a shell, and `--grep` (below) is the tool for filtering output.
+3. The verb (`argv[0]`, or `argv[0] + " " + argv[1]` when that two-word pair is itself a declared
+   verb) must be in `verbs`.
+4. Any remaining argument equal to a `denyFlags` entry, or of the form `<flag>=...` for one, is
+   rejected, naming the flag.
+5. For `get`, the first non-flag argument after the verb is the resource arg: split on `,` (a
+   command can name several types at once), then on each item, the part before a `/name` suffix and
+   before a `.group` suffix is checked against `sensitiveTypes`. A match with `-o`/`--output` set to
+   anything other than `name` or `wide` is rejected.
+6. Pseudo-flags, resolved last and stripped before the command ever reaches `subprocess`: `--grep
+   <regex>` / `--grep=<regex>` is a case-insensitive line filter applied to captured stdout, checked
+   before execution only so far as compiling the regex (an invalid one is rejected up front, never
+   silently ignored). For `logs`: `--tail=200` is added when neither `--tail` nor `--since`/
+   `--since-time` was given; `--limit-bytes=<4 × the effective maxBytes>` is added when not given,
+   or an explicitly given one is clamped down to that same ceiling.
+
+A rejection is `{reason, hint}` -- never raised, never partially executed.
+
+**Execution** (`rwdiscovery/cli.py`'s `run_cli`, mirroring how `inspect` receives its credential --
+`tasks.py`): the `kubeconfig` credential is written to a 0600 file inside the request's own scope
+directory (the same convention `credentials.py` uses for the Python client), and `kubectl` is run as
+a real subprocess -- no shell -- as `kubectl --kubeconfig <file> --request-timeout=<t>s <argv>`,
+`argv` being the validated, pseudo-flag-resolved command from above. The child's environment is
+scrubbed to exactly `PATH`/`HOME`/`KUBECONFIG`; nothing else from the pod's own environment reaches
+it. A wall-clock timeout of `t + 2` seconds kills the process outright (`t` is the request's
+`timeoutSeconds`, clamped to the pack's `output.timeoutSeconds`/`maxTimeoutSeconds`). stdout is read
+incrementally, `--grep`'s filter applied to each line *before* it counts against `maxBytes` (a
+dropped line costs nothing; the stream is still drained past the cap so the process isn't left
+blocked on a full pipe), so the response is genuinely the first `maxBytes` of *matching* output, not
+a somewhat-larger raw capture. stderr is capped independently, at a fixed 4 KB, no filtering. The
+kubeconfig file is removed once the command has finished, success or not.
+
+**`rw.cli_result.v1`** (the `cli` task's only output): `{argv: [str], exitCode: int, stdout: str,
+stderr: str, truncated: bool, stdoutBytes: int, durationMs: int, rejected: {reason, hint} | null}`.
+`rejected` is set, and `exitCode` is `-1`, exactly when validation failed -- `subprocess` is never
+invoked in that case. `argv` is always the fully resolved command actually run (or that would have
+been run); it never carries `--kubeconfig`/`--request-timeout`, which are the executor's own
+addition, not part of the validated command.

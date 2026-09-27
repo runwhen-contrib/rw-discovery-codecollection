@@ -21,12 +21,13 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from pydantic import TypeAdapter  # noqa: E402
 
-from rwdiscovery.models import DiscoverySummary, K8sObjectResult  # noqa: E402
+from rwdiscovery.models import CliResult, DiscoverySummary, K8sObjectResult  # noqa: E402
 
 CAPABILITY_DIR = REPO_ROOT / "capabilities" / "k8s-discovery"
 SCHEMAS = {
     "discovery_summary.json": TypeAdapter(DiscoverySummary).json_schema(),
     "k8s_object.json": TypeAdapter(K8sObjectResult).json_schema(),
+    "cli_result.json": TypeAdapter(CliResult).json_schema(),
 }
 
 

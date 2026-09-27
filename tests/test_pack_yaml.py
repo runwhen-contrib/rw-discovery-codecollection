@@ -2,16 +2,19 @@
 every JMESPath expression compiles, every strategy/edgeType is in the
 closed vocabulary, and packbuild.py's generated `types` covers every
 builtin kind. Also validates the pack's `access` block against
-access-phase1 contract §1 -- the same rules papi's own pack validation
-enforces at registration time."""
+access-phase1 contract §1, and its `cli` block against platform-contract
+§7 -- the same rules papi's own pack validation enforces at registration
+time."""
 
 from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 
 import jmespath
 import pytest
+from runwhen_capability.loader import load_manifest
 
 from rwdiscovery.chain import BUILTIN_TYPES, CLUSTER, NAMESPACE, resolve_type
 from rwdiscovery.discover import CLUSTER_ROLLUP_REQUIRED_SOURCES
@@ -26,6 +29,8 @@ from rwdiscovery.packbuild import (
     load_pack_yaml,
 )
 from rwdiscovery.rollup_context import ROLLUP_FACET_REQUIRED_SOURCES
+
+CAPABILITY_DIR = Path(__file__).resolve().parent.parent / "capabilities" / "k8s-discovery"
 
 # platform-contract §2's closed strategy/edgeType vocabulary.
 VALID_STRATEGIES = {"reference", "owner_reference", "label_selector", "field_join", "path_template", "dns_reference"}
@@ -460,3 +465,60 @@ def test_build_pack_payload_carries_access_and_populator_sources(pack):
     assert payload["access"] == pack["access"]
     k8s_pods_facet = next(f for f in payload["facetDefinitions"] if f["key"] == "k8sPods")
     assert k8s_pods_facet["populator"]["sources"] == ["pod", "replicaset"]
+
+
+# --- platform-contract §7: the pack's `cli` block ---------------------------
+
+_CLI_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,31}$")
+
+
+def test_cli_block_name_matches_the_declared_grammar(pack):
+    assert _CLI_NAME_RE.match(pack["cli"]["name"])
+
+
+def test_cli_block_names_the_capability_and_task_this_repo_actually_ships(pack):
+    """§1: `capability`/`task` name the manifest that executes it --
+    checked against the real, loaded manifest so the two can never drift
+    apart silently."""
+    manifest = load_manifest(CAPABILITY_DIR)
+    cli = pack["cli"]
+    assert cli["capability"] == manifest["capability"]
+    task_names = {t["name"] for t in manifest["tasks"]}
+    assert cli["task"] in task_names
+    cli_task = next(t for t in manifest["tasks"] if t["name"] == cli["task"])
+    assert cli_task["readOnly"] is True
+    assert cli_task.get("invocation") == ["sync"]
+
+
+def test_cli_block_verbs_are_unique_non_empty_strings(pack):
+    verbs = pack["cli"]["verbs"]
+    assert verbs
+    assert all(isinstance(v, str) and v for v in verbs)
+    assert len(verbs) == len(set(verbs))
+
+
+def test_cli_block_deny_flags_are_unique_and_flag_shaped(pack):
+    deny_flags = pack["cli"]["denyFlags"]
+    assert deny_flags
+    assert all(f.startswith("-") for f in deny_flags)
+    assert len(deny_flags) == len(set(deny_flags))
+
+
+def test_cli_block_sensitive_types_are_declared_static_types(pack):
+    """`sensitiveTypes` names real Kubernetes resource type words -- not
+    necessarily this pack's own `types` static-type identifiers (`secret`
+    is both here), but never empty."""
+    assert pack["cli"]["sensitiveTypes"]
+
+
+def test_cli_block_output_bounds_are_sane(pack):
+    output = pack["cli"]["output"]
+    assert 0 < output["defaultBytes"] <= output["maxBytes"]
+    assert 0 < output["timeoutSeconds"] <= output["maxTimeoutSeconds"]
+
+
+def test_pack_has_at_most_one_cli_block(pack):
+    # A YAML mapping can only ever have one `cli` key -- this asserts the
+    # loaded value is a single mapping, not a list some other shape would
+    # let slip through unnoticed.
+    assert isinstance(pack["cli"], dict)

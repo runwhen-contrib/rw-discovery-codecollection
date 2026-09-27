@@ -960,6 +960,145 @@ def test_namespace_get_also_forbidden_pushes_a_stub_item(tmp_path: Path):
     assert "uid" not in namespace_item["document"]["metadata"]
 
 
+def _build_fake_cluster_two_namespaces() -> FakeK8sClient:
+    """A minimal two-namespace cluster for the M5 (`excludeNamespaces`)
+    tests below -- lean on purpose (no CRDs/nodes/rollup sources), since all
+    it needs to prove is that an excluded namespace's own item and its
+    deployment are never pushed, while an in-scope sibling's still are."""
+    return FakeK8sClient(
+        single={
+            "/version": {"gitVersion": "v1.29.4"},
+            "/apis": {
+                "groups": [
+                    {
+                        "name": "apps",
+                        "preferredVersion": {"groupVersion": "apps/v1", "version": "v1"},
+                        "versions": [{"groupVersion": "apps/v1", "version": "v1"}],
+                    }
+                ]
+            },
+            "/api/v1": {"resources": [{"name": "namespaces", "kind": "Namespace", "namespaced": False, "verbs": []}]},
+            "/apis/apps/v1": {
+                "resources": [
+                    {"name": "deployments", "kind": "Deployment", "namespaced": True, "verbs": ["get", "list"]}
+                ]
+            },
+            "/api/v1/namespaces": {
+                "items": [
+                    {"metadata": {"name": "acme-payments", "uid": "ns-uid-1", "labels": {}}},
+                    {"metadata": {"name": "acme-staging", "uid": "ns-uid-2", "labels": {}}},
+                ]
+            },
+        },
+        pages={
+            "/apis/apps/v1/deployments": [
+                {
+                    "items": [
+                        {
+                            "apiVersion": "apps/v1",
+                            "kind": "Deployment",
+                            "metadata": {"name": "acme-api", "namespace": "acme-payments", "uid": "deploy-uid-1"},
+                            "spec": {},
+                            "status": {},
+                        },
+                        {
+                            "apiVersion": "apps/v1",
+                            "kind": "Deployment",
+                            "metadata": {"name": "staging-api", "namespace": "acme-staging", "uid": "deploy-uid-2"},
+                            "spec": {},
+                            "status": {},
+                        },
+                    ]
+                }
+            ],
+        },
+    )
+
+
+@responses.activate
+def test_excluded_namespace_items_are_never_pushed_and_report_excluded_partitions(tmp_path: Path):
+    """M5: narrowing scope with `excludeNamespaces` must not soft-delete
+    (cascade-sweep) the excluded namespace's own resource tree. The excluded
+    namespace's own item, and its Deployment, are never pushed; the
+    aggregate `namespace` partition (which covers every Namespace object
+    under the cluster, in or out of scope) is `excluded`, never `complete`;
+    and `deployment` -- a type that WOULD have gotten a `complete` partition
+    for this namespace had it stayed in scope -- gets its own `excluded`
+    partition entry for it too."""
+    fake_papi = _FakePapi()
+    fake_papi.install()
+
+    summary = run_discover(
+        kubeconfig_yaml="unused",
+        resource_sync_raw=_resource_sync_credential_raw(),
+        cluster_name="acme-prod-eu",
+        namespaces=None,
+        exclude_namespaces=["acme-staging"],
+        config_map_values="store",
+        overlay=None,
+        workdir=tmp_path,
+        k8s_client=_build_fake_cluster_two_namespaces(),
+    )
+
+    # --- nothing from the excluded namespace was pushed ---
+    pushed_names = {i["identity"]["chain"][-1]["name"] for i in fake_papi.pushed_items}
+    assert "staging-api" not in pushed_names
+    assert "acme-staging" not in pushed_names
+    # --- the in-scope namespace's items are unaffected ---
+    assert "acme-api" in pushed_names
+    assert "acme-payments" in pushed_names
+
+    commit_body = fake_papi.commit_calls[0]
+    partitions_by_type: dict[str, list[dict]] = {}
+    for p in commit_body["partitions"]:
+        partitions_by_type.setdefault(p["type"], []).append(p)
+
+    # --- the aggregate "namespace" partition can no longer claim complete ---
+    namespace_partitions = partitions_by_type["namespace"]
+    assert len(namespace_partitions) == 1
+    assert namespace_partitions[0]["status"] == "excluded"
+    assert "count" not in namespace_partitions[0]
+
+    # --- "deployment" gets one partition per namespace: complete for the
+    # in-scope one, excluded for the one left out of scope ---
+    deployment_by_namespace = {p["parentPath"].rsplit("/", 1)[-1]: p for p in partitions_by_type["deployment"]}
+    assert deployment_by_namespace["acme-payments"]["status"] == "complete"
+    assert deployment_by_namespace["acme-payments"]["count"] == 1
+    assert deployment_by_namespace["acme-staging"]["status"] == "excluded"
+    assert "count" not in deployment_by_namespace["acme-staging"]
+
+    assert summary["partitions"]["excluded"] >= 2  # namespace + deployment, at least
+
+
+@responses.activate
+def test_no_exclusion_filter_keeps_the_namespace_partition_complete(tmp_path: Path):
+    """M5's other half: behaviour is unchanged when no filter is given at
+    all -- both namespaces stay in scope and the aggregate partition is
+    still `complete`."""
+    fake_papi = _FakePapi()
+    fake_papi.install()
+
+    run_discover(
+        kubeconfig_yaml="unused",
+        resource_sync_raw=_resource_sync_credential_raw(),
+        cluster_name="acme-prod-eu",
+        namespaces=None,
+        exclude_namespaces=None,
+        config_map_values="store",
+        overlay=None,
+        workdir=tmp_path,
+        k8s_client=_build_fake_cluster_two_namespaces(),
+    )
+
+    pushed_names = {i["identity"]["chain"][-1]["name"] for i in fake_papi.pushed_items}
+    assert {"acme-payments", "acme-staging", "acme-api", "staging-api"} <= pushed_names
+
+    commit_body = fake_papi.commit_calls[0]
+    partitions_by_type = {p["type"]: p for p in commit_body["partitions"] if p["type"] == "namespace"}
+    assert partitions_by_type["namespace"]["status"] == "complete"
+    assert partitions_by_type["namespace"]["count"] == 2
+
+
 def _install_papi_with_failing_commit(fake_papi: _FakePapi, abort_status: int, abort_calls: list) -> None:
     base = f"{API_BASE}/api/v4/workspaces/{WORKSPACE}"
     responses.add(responses.PUT, f"{base}/resource-packs/kubernetes", json={"digest": "d"}, status=200)

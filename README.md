@@ -60,7 +60,10 @@ interface spelled out precisely.
    `GET` individually instead -- a minimal-privilege ServiceAccount is commonly granted `get` on
    specific namespaces but not a cluster-wide `list`. A namespace that even that GET can't reach
    still gets pushed as a stub (identity only, a marker annotation) so its children have a parent;
-   the namespace partition is reported `forbidden` either way.
+   the namespace partition is reported `forbidden` either way. A namespace `namespaces`/
+   `excludeNamespaces` leaves out of scope is reported `excluded`, for the namespace itself and for
+   every namespaced type -- never `complete`, so it is never swept: narrowing scope stops
+   refreshing that namespace, it does not delete what was already synced for it.
 6. Returns a summary (`rw.discovery_summary.v1`): sync id, pack digest, counts, partition status
    breakdown, duration, server version, cluster UID, and which rollup sources (if any) were
    unavailable, keyed by namespace (`""` for the cluster scope). **No bulk data returns through
@@ -73,8 +76,8 @@ Any failure after the sync is opened aborts it, rather than leaving it to expire
 | input | type | required | notes |
 |---|---|---|---|
 | `clusterName` | string | yes | Becomes the cluster resource's name -- must match RunWhen Local's `cluster.name` so the later SLX<->resource join is string equality. |
-| `namespaces` | string[] | no | Explicit in-scope namespace list. When omitted, scope is every namespace minus `excludeNamespaces`. |
-| `excludeNamespaces` | string[] | no | Ignored if `namespaces` is set. |
+| `namespaces` | string[] | no | Explicit in-scope namespace list. When omitted, scope is every namespace minus `excludeNamespaces`. A namespace left out of scope this way is reported `excluded`, never swept -- see below. |
+| `excludeNamespaces` | string[] | no | Ignored if `namespaces` is set. A namespace this excludes (or one simply left off an explicit `namespaces` list) keeps whatever was already synced for it; it is not re-discovered, and it is not deleted either. |
 | `configMapValues` | `"store"` \| `"keysOnly"` | no (default `store`) | `keysOnly` drops ConfigMap values, keeping only per-key size/hash -- for a hosted, multi-tenant install. |
 | `overlay` | object | no | `{"redactions": ["dotted.path", ...]}` -- an early, minimal hook for platform-level extra redactions; a fuller, workspace-configured version of this is expected to land later. |
 | `context` | string | no | A named context in the `kubeconfig` credential to build the API client from, instead of its current-context -- lets one kubeconfig serve more than one cluster. A context this kubeconfig doesn't have fails the task immediately with a `KubeconfigError` naming it (`rwdiscovery/credentials.py`). |

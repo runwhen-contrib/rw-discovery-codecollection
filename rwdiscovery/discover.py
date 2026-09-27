@@ -224,7 +224,7 @@ def run_discover(
     try:
         all_ns_items, ns_list_failure = _list_namespaces(k8s)
         in_scope_namespaces = _resolve_in_scope_namespaces(all_ns_items, namespaces, exclude_namespaces)
-        _push_cluster_and_namespaces(
+        excluded_namespaces = _push_cluster_and_namespaces(
             k8s,
             cluster_name,
             cluster_uid,
@@ -236,7 +236,9 @@ def run_discover(
             pusher,
             counters,
         )
-        _push_everything_else(k8s, cluster_name, resources, in_scope_namespaces, sanitize_options, pusher, counters)
+        _push_everything_else(
+            k8s, cluster_name, resources, in_scope_namespaces, excluded_namespaces, sanitize_options, pusher, counters
+        )
         pusher.flush()
 
         commit_body = [
@@ -363,7 +365,12 @@ def _push_cluster_and_namespaces(
     sanitize_options: SanitizeOptions,
     pusher: BatchingPusher,
     counters: _Counters,
-) -> None:
+) -> list[str]:
+    """Returns the namespaces `namespaces`/`excludeNamespaces` left out of
+    scope (empty when there was no exclusion, or when the namespace listing
+    itself failed/was forbidden -- there is no cluster-wide view to compute
+    exclusions against in that case) -- `_push_everything_else` uses this to
+    report every OTHER namespaced type as `excluded` for them too."""
     # --- cluster item, first (platform-contract §5: push order cluster -> namespaces -> rest) ---
     # The k8sCluster rollup reads only the node count and node labels.
     nodes, nodes_unavailable = _list_best_effort(
@@ -405,10 +412,11 @@ def _push_cluster_and_namespaces(
         # safe to sweep on this information alone.
         counters.partitions.append(ns_list_failure)
         counters.partition_types.append("namespace")
-        return
+        return []
 
     in_scope = set(in_scope_namespaces)
     pushed = 0
+    excluded_namespaces: list[str] = []
     for ns_item in all_ns_items:
         name = (ns_item.get("metadata") or {}).get("name")
         if name in in_scope:
@@ -417,8 +425,23 @@ def _push_cluster_and_namespaces(
                 partition_key=("namespace", None),
             )
             pushed += 1
-    counters.partitions.append(Partition(namespace=None, status="complete", count=pushed))
+        else:
+            excluded_namespaces.append(name)
+    if excluded_namespaces:
+        # `namespaces`/`excludeNamespaces` narrowed the scope: this run did
+        # NOT attempt to enumerate every Namespace under the cluster, so the
+        # aggregate partition can no longer claim `complete` -- every
+        # Namespace object shares this one (type, parentPath), so claiming
+        # `complete` here would sweep (and cascade-delete every descendant
+        # of) the very namespaces the input asked to leave alone. `excluded`
+        # is never swept (platform-contract §3), same as `forbidden`/
+        # `failed` -- the excluded namespace's resource tree survives,
+        # untouched, until it's back in scope.
+        counters.partitions.append(Partition(namespace=None, status="excluded"))
+    else:
+        counters.partitions.append(Partition(namespace=None, status="complete", count=pushed))
     counters.partition_types.append("namespace")
+    return excluded_namespaces
 
 
 _STUB_NAMESPACE_ANNOTATION = "k8s-discovery.runwhen.com/stub"
@@ -487,11 +510,28 @@ def _fetch_namespace_rollup_sources(
     return ctx, source_partitions
 
 
+def _excluded_namespace_partition_types(
+    resources: list[ApiResource], resources_by_type: dict[str, ApiResource]
+) -> list[str]:
+    """Every namespaced type name that would otherwise get its own commit
+    partition for an IN-SCOPE namespace: ordinary namespaced, non-ephemeral
+    resource types (`list_resource`'s own partition, in the main loop
+    below), plus the rollup-source types this cluster actually serves
+    (`_fetch_namespace_rollup_sources`'s own partition, above). An ephemeral
+    type outside that set (`endpoints`, `controllerrevision`, ...) is never
+    tracked as a partition for ANY namespace, in or out of scope, so there's
+    nothing to report `excluded` for it either."""
+    names = [r.type_spec.type for r in resources if r.type_spec.parent == "namespace" and not r.ephemeral]
+    names += [t for t in ROLLUP_SOURCE_TYPES if t in resources_by_type]
+    return names
+
+
 def _push_everything_else(
     k8s: K8sClient,
     cluster_name: str,
     resources: list[ApiResource],
     in_scope_namespaces: list[str],
+    excluded_namespaces: list[str],
     sanitize_options: SanitizeOptions,
     pusher: BatchingPusher,
     counters: _Counters,
@@ -546,4 +586,19 @@ def _push_everything_else(
                     )
             elif isinstance(event, PartitionEvent):
                 counters.partitions.append(event.partition)
+                counters.partition_types.append(type_name)
+
+    if excluded_namespaces:
+        # M5: `namespaces`/`excludeNamespaces` kept these out of scope --
+        # report `excluded`, never `complete`, for every namespaced type
+        # that would otherwise have gotten a partition here too. The
+        # aggregate "namespace" partition (`_push_cluster_and_namespaces`)
+        # is what actually stops the sweep/cascade; this refreshes
+        # `resource_coverage`'s bookkeeping for each excluded namespace's
+        # own types too, instead of leaving a stale prior run's `complete`
+        # counts sitting there looking current.
+        partition_types = _excluded_namespace_partition_types(resources, resources_by_type)
+        for ns in excluded_namespaces:
+            for type_name in partition_types:
+                counters.partitions.append(Partition(namespace=ns, status="excluded"))
                 counters.partition_types.append(type_name)

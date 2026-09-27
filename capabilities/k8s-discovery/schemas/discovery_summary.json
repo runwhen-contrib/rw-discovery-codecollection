@@ -47,6 +47,11 @@
           "default": 0,
           "title": "Forbidden",
           "type": "integer"
+        },
+        "excluded": {
+          "default": 0,
+          "title": "Excluded",
+          "type": "integer"
         }
       },
       "title": "DiscoveryPartitionCounts",

@@ -23,6 +23,7 @@ class DiscoveryPartitionCounts(BaseModel):
     complete: int = 0
     failed: int = 0
     forbidden: int = 0
+    excluded: int = 0
 
 
 class DiscoverySummary(BaseModel):

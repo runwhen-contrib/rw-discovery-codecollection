@@ -273,7 +273,10 @@ outputs. `k8s-discovery` declares three:
   straight to the platform through the sync protocol (§3); this result is only the run's own
   accounting. It registers the type/facet/rule pack (§2), opens a sync (§3), pushes items with
   every ancestor pushed before its children, and commits with one partition per `(type,
-  parentPath)` it actually attempted to enumerate. Any failure once the sync is open aborts it,
+  parentPath)` it actually attempted to enumerate. A namespace `namespaces`/`excludeNamespaces`
+  leaves out of scope gets `excluded` partitions instead -- for the namespace itself and for every
+  namespaced type -- never `complete`, so §3's sweep leaves it, and everything under it, alone;
+  narrowing scope this way is non-destructive. Any failure once the sync is open aborts it,
   rather than leaving it to expire on its own lease. `rollupSourcesUnavailable` maps a namespace
   name (or `""`, the cluster scope) to which of the ephemeral, rollup-only source collections
   (pods, ReplicaSets, EndpointSlices, Events) plus Jobs and Nodes (both stored resources in their

@@ -62,7 +62,15 @@ def build_api_client(kubeconfig_yaml: str, workdir: Path, context: str | None = 
                 temp_file_path=str(workdir),
             )
         except Exception as exc:  # noqa: BLE001 -- any parse/auth-plugin failure collapses to one error class
-            raise KubeconfigError(f"could not load the kubeconfig credential: {exc}") from exc
+            # Never `{exc}`: a blocked Secret handed to this task by mistake
+            # (H6 -- a bypassed credential block list) is not a kubeconfig,
+            # and PyYAML's/the client library's own error messages quote the
+            # offending line -- a fragment of the mistaken secret would
+            # otherwise ride straight into `capability_runs.error`, which
+            # READ_ONLY workspace members can read. A fixed message plus the
+            # exception's class name is diagnosable without repeating any of
+            # its content.
+            raise KubeconfigError(f"could not load the kubeconfig credential ({type(exc).__name__})") from exc
         return client.ApiClient(configuration=configuration)
     finally:
         try:
@@ -78,7 +86,9 @@ def _require_known_context(kubeconfig_yaml: str, context: str) -> None:
     try:
         parsed = yaml.safe_load(kubeconfig_yaml) or {}
     except yaml.YAMLError as exc:
-        raise KubeconfigError(f"could not load the kubeconfig credential: {exc}") from exc
+        # Same reasoning as `build_api_client`'s own catch, above: never
+        # `{exc}` -- PyYAML quotes the offending line in its error message.
+        raise KubeconfigError(f"could not parse the kubeconfig credential ({type(exc).__name__})") from exc
     known = sorted({c.get("name") for c in (parsed.get("contexts") or []) if isinstance(c, dict) and c.get("name")})
     if context not in known:
         raise KubeconfigError(f"context {context!r} not found in kubeconfig (known contexts: {known})")

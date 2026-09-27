@@ -150,3 +150,25 @@ def test_service_account_kubeconfig_with_an_unknown_context_fails_fast(tmp_path:
         build_api_client(kubeconfig, workdir, context="other")
     # No leftover raw kubeconfig file from the failed attempt.
     assert not list(workdir.glob(".kubeconfig-*"))
+
+
+# H6: a runner Secret handed to this task by mistake (a bypassed
+# `blockedSecrets` match) isn't a kubeconfig -- PyYAML's own error message
+# quotes the offending line, which could be a fragment of that secret. The
+# malformed content below stands in for one: neither codepath below may let
+# its text ride into the raised error, whether or not `context` is given.
+_MALFORMED_KUBECONFIG = "SUPER_SECRET_TOKEN_VALUE: [unterminated"
+
+
+def test_malformed_kubeconfig_never_echoes_the_raw_parser_text_without_context(tmp_path: Path):
+    with pytest.raises(KubeconfigError) as exc_info:
+        build_api_client(_MALFORMED_KUBECONFIG, tmp_path)
+    assert "SUPER_SECRET_TOKEN_VALUE" not in str(exc_info.value)
+    assert "ParserError" in str(exc_info.value)  # the exception class name, nothing more
+
+
+def test_malformed_kubeconfig_never_echoes_the_raw_parser_text_with_context(tmp_path: Path):
+    with pytest.raises(KubeconfigError) as exc_info:
+        build_api_client(_MALFORMED_KUBECONFIG, tmp_path, context="ctx")
+    assert "SUPER_SECRET_TOKEN_VALUE" not in str(exc_info.value)
+    assert "ParserError" in str(exc_info.value)

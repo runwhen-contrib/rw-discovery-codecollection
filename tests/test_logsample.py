@@ -393,3 +393,13 @@ def test_run_budget_stops_early_on_time_and_marks_truncated(monkeypatch):
     result = run_log_sample(fake, [target_a], now=datetime(2026, 9, 25, tzinfo=UTC))
     assert result.workloads[0]["status"] == "truncated"
     assert result.summary["truncated"] is True
+
+
+def test_detect_tornado_one_letter_error_level():
+    assert detect_error_start("[E 260927 05:47:24 base_events:1771] Future exception was never retrieved")
+    assert detect_error_start("[C 260927 05:47:24 web:2345] Uncaught exception in handler")
+
+
+def test_tornado_warning_and_info_levels_are_not_detected():
+    assert detect_error_start("[W 260927 05:47:24 web:2271] 404 GET /missing (10.0.0.1) 0.51ms") is None
+    assert detect_error_start("[I 260927 05:47:24 web:2271] 200 GET / (10.0.0.1) 0.51ms") is None

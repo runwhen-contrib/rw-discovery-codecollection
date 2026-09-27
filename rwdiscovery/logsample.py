@@ -277,6 +277,10 @@ _BRACKET_LEVEL_RE = re.compile(r"(?i)\[(error|crit|alert|emerg|fatal)\]")
 # bare lowercase level column (tab- or space-separated) -- `warn`/`info`/
 # `debug` are deliberately not in this set.
 _COLUMN_LEVEL_RE = re.compile(r"(?i)^\S+[\t ]+(error|err|fatal|crit|critical|panic|dpanic|alert|emerg)(?=[\t ]|$)")
+# Tornado's default log format (also Flower and other tornado-based services):
+# a one-letter level, then a yymmdd date -- `[E 260927 05:47:24 module:123] ...`.
+# `C`/`F` are critical/fatal; `W`/`I`/`D` are deliberately not in this set.
+_TORNADO_LEVEL_RE = re.compile(r"^\[[ECF] \d{6} \d{2}:\d{2}:\d{2}")
 _PY_TRACEBACK_START_TEXT = "Traceback (most recent call last):"
 _PY_EXCEPTION_LINE_RE = re.compile(r"^\S*(Exception|Error)(:|$)")
 
@@ -313,6 +317,8 @@ def detect_error_start(text: str) -> _StartMatch | None:
     if _LEVEL_TOKEN_RE.search(text):
         return _StartMatch(seed=text)
     if _COLUMN_LEVEL_RE.match(text):
+        return _StartMatch(seed=text)
+    if _TORNADO_LEVEL_RE.match(stripped):
         return _StartMatch(seed=text)
     return None
 

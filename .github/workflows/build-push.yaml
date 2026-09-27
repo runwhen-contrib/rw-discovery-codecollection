@@ -333,9 +333,14 @@ jobs:
           docker run --rm -v "${{ github.workspace }}:/w" -w /w "${IMG}" \
             python3 -c "import yaml; d = yaml.safe_load(open('capabilities/k8s-discovery/manifest.yaml')); assert d['capability'] == 'k8s-discovery'"
 
-          # No shell tools ship in this image -- discovery talks HTTP only.
-          if docker run --rm "${IMG}" sh -c 'command -v kubectl' >/dev/null 2>&1; then
-            echo "k8s-discovery image must not ship kubectl" >&2
+          # kubectl ships for the `cli` task only (platform-contract §7), pinned and
+          # sha256-verified in the Dockerfile; discover and inspect still talk to the
+          # API over HTTP. Assert the image carries exactly the pinned version.
+          want=$(sed -n 's/^ARG KUBECTL_VERSION=//p' Dockerfile.k8s-discovery)
+          got=$(docker run --rm "${IMG}" kubectl version --client -o json \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["clientVersion"]["gitVersion"])')
+          if [ -z "${want}" ] || [ "${got}" != "${want}" ]; then
+            echo "k8s-discovery image ships kubectl '${got}', expected the pinned '${want}'" >&2
             exit 1
           fi
 

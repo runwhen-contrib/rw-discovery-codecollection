@@ -11,6 +11,7 @@ reads back off the pushed image."""
 from __future__ import annotations
 
 import base64
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -182,3 +183,30 @@ def test_manifest_label_script_reports_capability_and_version():
     manifest = load_manifest(CAPABILITY_DIR)
     assert outputs["capability"] == manifest["capability"]
     assert outputs["capability_version"] == manifest["version"]
+
+
+# ---------------------------------------------------------------------------
+# com.runwhen.capability.schemas.v1: the output JSON Schemas the manifest's
+# tasks reference, bundled alongside the manifest label itself. See
+# tests/test_manifest_label.py for the unit-level coverage (missing/invalid
+# schema files, path escapes, empty case) -- these two only cover the real,
+# checked-in manifest end to end, through the script's CLI.
+# ---------------------------------------------------------------------------
+CAPABILITY_SCHEMAS_LABEL = "com.runwhen.capability.schemas.v1"
+
+
+def test_dockerfile_schemas_label_key_matches_the_catalog_reader():
+    dockerfile_text = DOCKERFILE.read_text()
+    assert f'{CAPABILITY_SCHEMAS_LABEL}="${{SCHEMAS_B64}}"' in dockerfile_text
+
+
+def test_manifest_label_script_reports_the_real_manifests_output_schemas():
+    outputs = _run_manifest_label_script()
+    decoded = json.loads(base64.b64decode(outputs["schemas_b64"]))
+    assert decoded.keys() == {"schemas/discovery_summary.json", "schemas/k8s_object.json"}
+    assert decoded["schemas/discovery_summary.json"] == json.loads(
+        (CAPABILITY_DIR / "schemas" / "discovery_summary.json").read_text()
+    )
+    assert decoded["schemas/k8s_object.json"] == json.loads(
+        (CAPABILITY_DIR / "schemas" / "k8s_object.json").read_text()
+    )

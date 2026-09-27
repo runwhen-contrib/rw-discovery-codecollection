@@ -316,6 +316,15 @@ are the reference implementations this section mirrors):
   a build arg. The codecollection catalog reads this label straight off the pushed image's config
   blob -- never a separate build artifact, and never a platform release -- to learn the
   capability's id, version, and full manifest.
+- **The output schemas ride the image too.** A task output's `schema:` value (e.g.
+  `./schemas/k8s_object.json`) only names the JSON Schema file, relative to `manifest.yaml`; the
+  file itself does not otherwise leave this repo. A second OCI label,
+  `com.runwhen.capability.schemas.v1`, carries the base64 of one compact JSON object mapping every
+  referenced schema's normalized path to its parsed contents -- computed by the same
+  `scripts/manifest_label.py`, which fails the build if a referenced schema is missing, invalid
+  JSON, or not a JSON object. This lets the codecollection catalog validate a capability's outputs
+  against the exact schema version that shipped with the image, without a bundled copy of its own
+  that could drift.
 - **Semver tags are releases.** Pushing a tag matching `v<major>.<minor>.<patch>` publishes the
   canonical, immutable release image under that tag alone -- no `-<sha7>` suffix (unlike a branch
   build, where the suffix is what makes an otherwise-moving tag immutable), no `latest`, no branch

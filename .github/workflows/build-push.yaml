@@ -295,6 +295,16 @@ jobs:
           print("manifest.yaml: has all required top-level keys, capability=k8s-discovery, mode=stateless")
           PY
 
+      - name: Validate the output schemas the manifest references
+        run: |
+          set -euo pipefail
+          # Resolves every tasks[*].outputs[*].schema reference the same way
+          # scripts/manifest_label.py does for the schemas label, so a
+          # missing/invalid schema fails the build here rather than at the
+          # image build step (both build-args steps compute this again from
+          # `steps.labels`, but this runs first and gates the whole matrix).
+          python3 scripts/manifest_label.py > /dev/null
+
   # ===========================================================================
   # build — parallel native builds, one leg per platform, so each runs on a
   # runner whose architecture matches the platform it is building, with no
@@ -330,7 +340,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute manifest label build-args
+      - name: Compute manifest and schemas label build-args
         id: labels
         run: |
           python3 -m pip install --quiet pyyaml
@@ -355,6 +365,7 @@ jobs:
             CAPABILITY=${{ steps.labels.outputs.capability }}
             CAPABILITY_VERSION=${{ steps.labels.outputs.capability_version }}
             MANIFEST_B64=${{ steps.labels.outputs.manifest_b64 }}
+            SCHEMAS_B64=${{ steps.labels.outputs.schemas_b64 }}
           cache-from: type=gha,scope=${{ env.IMAGE_NAME }}-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ env.IMAGE_NAME }}-${{ matrix.arch }}
 
@@ -418,6 +429,7 @@ jobs:
             CAPABILITY=${{ steps.labels.outputs.capability }}
             CAPABILITY_VERSION=${{ steps.labels.outputs.capability_version }}
             MANIFEST_B64=${{ steps.labels.outputs.manifest_b64 }}
+            SCHEMAS_B64=${{ steps.labels.outputs.schemas_b64 }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}

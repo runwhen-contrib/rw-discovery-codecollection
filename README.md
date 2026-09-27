@@ -313,6 +313,14 @@ separate build artifact, and never a platform release. Mirrors the same conventi
 rw-checks-codecollection established (`docs/platform-contract.md` and that repo's own
 `manifest.yaml` header comment cite the same contract).
 
+The same image also carries the JSON Schema documents its task outputs reference (`discover`'s
+and `inspect`'s `outputs.<name>.schema`, e.g. `./schemas/k8s_object.json`), as a second OCI label,
+`com.runwhen.capability.schemas.v1`: base64 of one compact JSON object keyed by each schema's
+manifest-relative path, values the schemas themselves. `scripts/manifest_label.py` computes it
+from the same `manifest.yaml`, and fails the build if a referenced schema file is missing, isn't
+valid JSON, or isn't a JSON object. The codecollection catalog reads it the same way it reads the
+manifest label, so a schema change ships with the image, never a separate platform release.
+
 To inspect the label on a published image without pulling it:
 
 ```

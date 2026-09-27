@@ -120,11 +120,19 @@ ENV RWDISCOVERY_PACK_PATH=/app/packs/kubernetes/pack.yaml
 # CI-resolved-digest step any more: the manifest never carries an `image:`
 # field (see manifest.yaml's own header comment), so there is nothing left
 # for such a step to inject.
+#
+# com.runwhen.capability.schemas.v1 rides alongside it: a task output only
+# *names* its JSON Schema by a relative path (e.g.
+# ./schemas/k8s_object.json); this label carries the referenced schemas
+# themselves (also from scripts/manifest_label.py), so the catalog
+# (cc-catalog-svc) serves a capability's output schemas straight off the
+# pushed image, and the platform needs no bundled copy that can go stale.
 ARG REVISION=unknown
 ARG CREATED=unknown
 ARG CAPABILITY=k8s-discovery
 ARG CAPABILITY_VERSION=unknown
 ARG MANIFEST_B64=
+ARG SCHEMAS_B64=
 LABEL org.opencontainers.image.title="k8s-discovery" \
       org.opencontainers.image.description="Kubernetes cluster discovery capability for the RunWhen platform" \
       org.opencontainers.image.source="https://github.com/runwhen-contrib/rw-discovery-codecollection" \
@@ -133,7 +141,8 @@ LABEL org.opencontainers.image.title="k8s-discovery" \
       org.opencontainers.image.created="${CREATED}" \
       io.runwhen.capability="${CAPABILITY}" \
       io.runwhen.capability.version="${CAPABILITY_VERSION}" \
-      com.runwhen.capability.manifest.v1="${MANIFEST_B64}"
+      com.runwhen.capability.manifest.v1="${MANIFEST_B64}" \
+      com.runwhen.capability.schemas.v1="${SCHEMAS_B64}"
 
 # Non-root. /work is rwtask serve's default --workdir -- every request's
 # scope directory (<workdir>/<scopeId>/) is created and wiped under it,

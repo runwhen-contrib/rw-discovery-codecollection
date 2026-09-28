@@ -360,56 +360,77 @@ on papi's side.
 
 **The pack's `cli` block** (`packs/kubernetes/pack.yaml`, alongside `access`) is what papi validates
 a request against, and what this capability loads (`packbuild.load_pack_yaml()["cli"]`,
-`rwdiscovery/cli.py`) to re-validate and execute one:
+`rwdiscovery/cli.py`) to re-validate and execute one. It is an **allow-list**:
 
 ```
 cli  {name, capability, task,
-      verbs: [str], denyFlags: [str], sensitiveTypes: [str],
+      flags: {<long-name>: {short?: <one letter>, value?: bool, pseudo?: bool}},
+      verbs: {<verb>: {flags: [<long-name>], outputs?: [str]}},
+      sensitiveTypes: [str], sensitiveOutputs: [str],
       output: {defaultBytes, maxBytes, timeoutSeconds, maxTimeoutSeconds}}
 ```
 
 `name` is the agent-facing tool/endpoint name (`^[a-z][a-z0-9-]{1,31}$`); `capability`/`task` name
-which capability and task actually run it (`k8s-discovery`/`cli` here). `verbs` is the closed list
-of first-one-or-two argv tokens a command may start with (`get`, `describe`, `logs`, ..., two-word
-verbs like `auth can-i` and `rollout history`) -- nothing else is a valid command at all. `denyFlags`
-blocks every flag that would let a command escape read-only, cluster-scoped, non-interactive use
-(credential/context overrides, `-f`/`--filename` manifests, `--watch`/`--follow`/`-i`/`-t`).
-`sensitiveTypes` (`secret`, `secrets`) restricts `get` on those types to the default table view,
-`-o name`, or `-o wide` -- never a full object dump. `output` bounds how much a command can ask
-for: `maxBytes`/`maxTimeoutSeconds` are hard ceilings; `defaultBytes`/`timeoutSeconds` apply when a
-request doesn't specify one.
+which capability and task actually run it (`k8s-discovery`/`cli` here). `flags` declares every flag
+the CLI may ever take, by long name (`[a-z][a-z0-9-]*`): `short` is its one-letter form (unique across
+flags), `value` says it takes a value (otherwise it is a boolean), and `pseudo` marks a flag this
+capability handles itself and never passes to kubectl (`grep`). A flag that isn't declared -- every
+credential, context or server override, `-f`/`--filename`, `--raw`, `--watch`/`--follow`, `-v` and the
+profiling flags among them -- can never be used at all. `verbs` maps each allowed verb (one or two
+words: `get`, `logs`, `auth can-i`, `rollout history`, ...) to the declared flags it allows and, for a
+verb that allows `output`, the `-o` values it allows (`outputs`; an entry ending in `=*`, like
+`jsonpath=*`, allows any value with that prefix). `sensitiveTypes` (`secret`, `secrets`) restricts
+every verb on those types to the default table view or one of `sensitiveOutputs` (`name`, `wide`) --
+never a full object dump. `output` bounds how much a command can ask for: `maxBytes`/
+`maxTimeoutSeconds` are hard ceilings; `defaultBytes`/`timeoutSeconds` apply when a request doesn't
+specify one.
 
-**Validation** (identical rules in papi and here -- papi's own copy exists for early, helpful
-errors; this capability's is authoritative, since it is the one that actually execs anything):
+**Validation** (identical rules in papi and here, held to the same shared vector file,
+`tests/cli_vectors.json` -- papi's own copy exists for early, helpful errors; this capability's is
+authoritative, since it is the one that actually execs anything). The command is parsed the way
+kubectl's own flag parser (pflag) parses it, and the first violated rule is the rejection:
 
-1. Split the command on whitespace (`shlex.split(command, posix=True)`); drop a leading `kubectl`
-   token. An empty result is rejected.
-2. Any shell metacharacter (`| || & && ; > >> < $(` or a backtick) anywhere in a token -- as the
-   whole token, or glued to a word with no space around it -- is rejected: this is one `kubectl`
-   invocation per call, never a shell, and `--grep` (below) is the tool for filtering output.
-3. The verb (`argv[0]`, or `argv[0] + " " + argv[1]` when that two-word pair is itself a declared
-   verb) must be in `verbs`.
-4. Any remaining argument equal to a `denyFlags` entry, or of the form `<flag>=...` for one, is
-   rejected, naming the flag.
-5. For `get`, the first non-flag argument after the verb is the resource arg: split on `,` (a
-   command can name several types at once), then on each item, the part before a `/name` suffix and
-   before a `.group` suffix is checked against `sensitiveTypes`. A match with `-o`/`--output` set to
-   anything other than `name` or `wide` is rejected.
-6. Pseudo-flags, resolved last and stripped before the command ever reaches `subprocess`: `--grep
-   <regex>` / `--grep=<regex>` is a case-insensitive line filter applied to captured stdout, checked
-   before execution only so far as compiling the regex (an invalid one is rejected up front, never
-   silently ignored). For `logs`: `--tail=200` is added when neither `--tail` nor `--since`/
-   `--since-time` was given; `--limit-bytes=<4 × the effective maxBytes>` is added when not given,
-   or an explicitly given one is clamped down to that same ceiling.
+1. Split the command with `shlex.split(command, posix=True)` (a split failure is `unparsable`); the
+   request's `argv` arrives already split and skips this. Drop a leading `kubectl` token. Nothing
+   left is `empty`.
+2. A token that is exactly one of `| || & && ; > >> < <<`, starts with `$(` or a backtick, or ends
+   with `;` is `no-shell`: one kubectl invocation per call, never a shell, and `--grep` is the tool
+   for filtering output. A `|` inside a flag value (`--grep=ERROR|FATAL`) is fine.
+3. The verb is the first two tokens when that pair is a declared verb, otherwise the first token;
+   anything else is `verb-not-allowed`.
+4. The remaining tokens, left to right: `--` is `flag-not-allowed`. `--name[=v]` must name a declared
+   flag the verb allows (`flag-not-allowed` otherwise, and the hint lists the verb's flags); a value
+   flag takes `v` or, without `=`, the next token (none is `missing-value`); a boolean's `=v` must be
+   `true` or `false` (`bad-value`). A short cluster (`-` then a letter: `-A`, `-Al`, `-oyaml`,
+   `-o=json`) is read one letter at a time: each must be the `short` of a flag the verb allows; a
+   boolean continues the cluster, a value flag takes the rest of the token (a leading `=` stripped)
+   or, when that is empty, the next token, and ends it. Every other token is a positional argument.
+   A flag may repeat, except `output` and `grep` (`flag-not-allowed`).
+5. The `output` value must be one of the verb's `outputs` (or match a `=*` prefix entry):
+   `output-not-allowed` otherwise.
+6. The first positional, split on `,`, each part cut at `/`, lower-cased and cut at the first `.`
+   (`Secret`, `secret/s1`, `secrets.v1`, `secret,pods` all resolve to `secret`/`secrets`), is checked
+   against `sensitiveTypes`: a match with `output` set to anything outside `sensitiveOutputs` is
+   `sensitive-type`.
+7. `grep` is a pseudo-flag: removed from the argv, and its value must compile as a Python regex
+   (`invalid-grep` otherwise). It is applied as a case-insensitive line filter to captured stdout.
+8. For `logs`: `--tail=200` is added when none of `tail`/`since`/`since-time` was given;
+   `--limit-bytes` must be a positive integer (`bad-value`; kubectl reads 0 as no limit), is clamped down to `4 × the effective maxBytes`,
+   and is added at that value when not given.
+9. The **normalised argv** is the verb's tokens, the positionals in order, then every flag in order of
+   appearance as `--name=value` (value flags), `--name` (booleans given without `=`) or
+   `--name=true|false` (booleans given with `=`), then any added defaults. This is the only argv ever
+   exec'd -- never the tokens as given.
 
-A rejection is `{reason, hint}` -- never raised, never partially executed.
+A rejection is `{reason, hint}` -- never raised, never partially executed. The reasons are `empty`,
+`unparsable`, `no-shell`, `verb-not-allowed`, `flag-not-allowed`, `missing-value`, `bad-value`,
+`output-not-allowed`, `sensitive-type` and `invalid-grep`; the hint says what to change.
 
 **Execution** (`rwdiscovery/cli.py`'s `run_cli`, mirroring how `discover` receives its credential --
 `tasks.py`): the `kubeconfig` credential is written to a 0600 file inside the request's own scope
 directory (the same convention `credentials.py` uses for the Python client), and `kubectl` is run as
 a real subprocess -- no shell -- as `kubectl --kubeconfig <file> --request-timeout=<t>s <argv>`,
-`argv` being the validated, pseudo-flag-resolved command from above. The child's environment is
-scrubbed to exactly `PATH`/`HOME`/`KUBECONFIG`; nothing else from the pod's own environment reaches
+`argv` being the normalised argv from above. The child's environment is scrubbed to exactly `PATH`/`HOME`/`KUBECONFIG`; nothing else from the pod's own environment reaches
 it. A wall-clock timeout of `t + 2` seconds kills the process outright (`t` is the request's
 `timeoutSeconds`, clamped to the pack's `output.timeoutSeconds`/`maxTimeoutSeconds`). stdout is read
 incrementally, `--grep`'s filter applied to each line *before* it counts against `maxBytes` (a
@@ -421,6 +442,6 @@ kubeconfig file is removed once the command has finished, success or not.
 **`rw.cli_result.v1`** (the `cli` task's only output): `{argv: [str], exitCode: int, stdout: str,
 stderr: str, truncated: bool, stdoutBytes: int, durationMs: int, rejected: {reason, hint} | null}`.
 `rejected` is set, and `exitCode` is `-1`, exactly when validation failed -- `subprocess` is never
-invoked in that case. `argv` is always the fully resolved command actually run (or that would have
-been run); it never carries `--kubeconfig`/`--request-timeout`, which are the executor's own
+invoked in that case. `argv` is the normalised argv actually run (for a rejected request, the argv
+as received); it never carries `--kubeconfig`/`--request-timeout`, which are the executor's own
 addition, not part of the validated command.

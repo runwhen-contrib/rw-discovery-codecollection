@@ -490,25 +490,101 @@ def test_cli_block_names_the_capability_and_task_this_repo_actually_ships(pack):
     assert cli_task.get("invocation") == ["sync"]
 
 
-def test_cli_block_verbs_are_unique_non_empty_strings(pack):
-    verbs = pack["cli"]["verbs"]
-    assert verbs
-    assert all(isinstance(v, str) and v for v in verbs)
-    assert len(verbs) == len(set(verbs))
+_CLI_FLAG_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
+_CLI_VERB_RE = re.compile(r"^[a-z][a-z0-9-]*( [a-z][a-z0-9-]*)?$")
+_CLI_FLAG_KEYS = {"short", "value", "pseudo"}
 
 
-def test_cli_block_deny_flags_are_unique_and_flag_shaped(pack):
-    deny_flags = pack["cli"]["denyFlags"]
-    assert deny_flags
-    assert all(f.startswith("-") for f in deny_flags)
-    assert len(deny_flags) == len(set(deny_flags))
+def test_cli_block_is_an_allow_list_with_no_deny_list(pack):
+    cli = pack["cli"]
+    assert "denyFlags" not in cli
+    assert isinstance(cli["flags"], dict) and cli["flags"]
+    assert isinstance(cli["verbs"], dict) and cli["verbs"]
 
 
-def test_cli_block_sensitive_types_are_declared_static_types(pack):
-    """`sensitiveTypes` names real Kubernetes resource type words -- not
-    necessarily this pack's own `types` static-type identifiers (`secret`
-    is both here), but never empty."""
-    assert pack["cli"]["sensitiveTypes"]
+def test_cli_block_flag_names_and_attributes_are_well_formed(pack):
+    for name, spec in pack["cli"]["flags"].items():
+        assert _CLI_FLAG_NAME_RE.match(name), name
+        assert isinstance(spec, dict), name
+        assert set(spec) <= _CLI_FLAG_KEYS, name
+        assert isinstance(spec.get("value", False), bool), name
+        assert isinstance(spec.get("pseudo", False), bool), name
+
+
+def test_cli_block_shorts_are_single_ascii_letters_and_unique(pack):
+    shorts = [spec["short"] for spec in pack["cli"]["flags"].values() if spec.get("short") is not None]
+    assert all(isinstance(s, str) and len(s) == 1 and s.isascii() and s.isalpha() for s in shorts), shorts
+    assert len(shorts) == len(set(shorts))
+
+
+def test_cli_block_verbs_are_one_or_two_words_and_use_only_declared_flags(pack):
+    flags = pack["cli"]["flags"]
+    for verb, spec in pack["cli"]["verbs"].items():
+        assert _CLI_VERB_RE.match(verb), verb
+        assert set(spec) <= {"flags", "outputs"}, verb
+        assert isinstance(spec["flags"], list), verb
+        for flag in spec["flags"]:
+            assert flag in flags, f"{verb}: {flag} is not declared"
+
+
+def test_cli_block_outputs_only_on_verbs_that_take_output(pack):
+    for verb, spec in pack["cli"]["verbs"].items():
+        if spec.get("outputs"):
+            assert "output" in spec["flags"], verb
+
+
+def test_cli_block_never_allows_a_credential_server_or_streaming_flag(pack):
+    """The flags the old deny-list named are simply not declared any more --
+    an undeclared flag can never be allowed for any verb."""
+    flags = pack["cli"]["flags"]
+    for name in (
+        "kubeconfig",
+        "server",
+        "token",
+        "as",
+        "as-group",
+        "as-uid",
+        "certificate-authority",
+        "client-certificate",
+        "client-key",
+        "insecure-skip-tls-verify",
+        "username",
+        "password",
+        "cluster",
+        "context",
+        "user",
+        "cache-dir",
+        "filename",
+        "kustomize",
+        "raw",
+        "watch",
+        "watch-only",
+        "follow",
+        "stdin",
+        "tty",
+        "v",
+        "profile",
+        "profile-output",
+    ):
+        assert name not in flags, name
+    shorts = {spec.get("short") for spec in flags.values()}
+    assert not shorts & {"s", "f", "k", "w", "i", "t", "v"}
+
+
+def test_cli_block_grep_is_a_pseudo_flag_only_logs_allows(pack):
+    cli = pack["cli"]
+    assert cli["flags"]["grep"] == {"value": True, "pseudo": True}
+    assert [verb for verb, spec in cli["verbs"].items() if "grep" in spec["flags"]] == ["logs"]
+
+
+def test_cli_block_sensitive_types_and_outputs(pack):
+    """`sensitiveTypes` names real Kubernetes resource type words; the only
+    `-o` values allowed on them are ones some verb actually takes."""
+    cli = pack["cli"]
+    assert cli["sensitiveTypes"]
+    all_outputs = {o for spec in cli["verbs"].values() for o in spec.get("outputs", [])}
+    assert cli["sensitiveOutputs"]
+    assert set(cli["sensitiveOutputs"]) <= all_outputs
 
 
 def test_cli_block_output_bounds_are_sane(pack):

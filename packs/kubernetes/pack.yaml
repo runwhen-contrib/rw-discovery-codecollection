@@ -148,34 +148,91 @@ access:
       facets: [k8sCronJob, k8sCronJobRuns]
       rules: []
 
-# platform-contract §7: this pack's kubectl CLI declaration -- verb
-# allow-list, denied flags, sensitive-type output restriction, and output
+# platform-contract §7: this pack's kubectl CLI declaration -- an allow-list
+# of every flag kubectl may take, the verbs and the flags (and `-o` values)
+# each one allows, the sensitive-type output restriction, and output
 # bounds. `rwdiscovery/cli.py` loads this same block (via
 # `packbuild.load_pack_yaml()`) to validate and execute every `cli` task
 # request; papi validates it too, for early, helpful errors, but this
 # capability's own re-validation of every request is authoritative.
 cli:
-  name: kubectl                    # the agent tool / endpoint name; [a-z][a-z0-9-]{1,31}
-  capability: k8s-discovery        # capability + task that executes it
+  name: kubectl
+  capability: k8s-discovery
   task: cli
-  verbs:                           # first one or two tokens of argv; nothing else is allowed
-    - get
-    - describe
-    - logs
-    - top
-    - events
-    - explain
-    - api-resources
-    - api-versions
-    - version
-    - auth can-i
-    - rollout history
-  denyFlags:                       # exact flag or `--flag=...`; short flags as given
-    [--kubeconfig, --server, -s, --token, --as, --as-group, --as-uid, --certificate-authority,
-     --client-certificate, --client-key, --insecure-skip-tls-verify, --username, --password,
-     --cluster, --context, --user, --cache-dir, -f, --filename, -k, --kustomize, --raw,
-     -w, --watch, --watch-only, --follow, -i, --stdin, -t, --tty]
-  sensitiveTypes: [secret, secrets]   # `get` on these allows only the default table, `-o name`, `-o wide`
+  flags:                               # every flag the CLI may ever take; anything else is refused
+    namespace:          {short: n, value: true}
+    all-namespaces:     {short: A}
+    selector:           {short: l, value: true}
+    field-selector:     {value: true}
+    output:             {short: o, value: true}
+    show-labels:        {}
+    label-columns:      {short: L, value: true}
+    sort-by:            {value: true}
+    no-headers:         {}
+    ignore-not-found:   {}
+    show-kind:          {}
+    chunk-size:         {value: true}
+    show-events:        {}
+    container:          {short: c, value: true}
+    previous:           {short: p}
+    since:              {value: true}
+    since-time:         {value: true}
+    tail:               {value: true}
+    timestamps:         {}
+    limit-bytes:        {value: true}
+    all-containers:     {}
+    prefix:             {}
+    max-log-requests:   {value: true}
+    ignore-errors:      {}
+    containers:         {}
+    sum:                {}
+    for:                {value: true}
+    types:              {value: true}
+    recursive:          {}
+    api-version:        {value: true}
+    namespaced:         {}
+    api-group:          {value: true}
+    verbs:              {value: true}
+    cached:             {}
+    client:             {}
+    list:               {}
+    subresource:        {value: true}
+    quiet:              {short: q}
+    revision:           {value: true}
+    grep:               {value: true, pseudo: true}   # handled by the capability, never passed to kubectl
+  verbs:
+    get:
+      flags: [namespace, all-namespaces, selector, field-selector, output, show-labels, label-columns,
+              sort-by, no-headers, ignore-not-found, show-kind, chunk-size]
+      outputs: [name, wide, json, yaml, "jsonpath=*", "jsonpath-as-json=*", "custom-columns=*"]
+    describe:
+      flags: [namespace, all-namespaces, selector, show-events, chunk-size]
+    logs:
+      flags: [namespace, container, previous, since, since-time, tail, timestamps, limit-bytes,
+              all-containers, prefix, selector, max-log-requests, ignore-errors, grep]
+    top:
+      flags: [namespace, all-namespaces, selector, containers, sort-by, no-headers, sum]
+    events:
+      flags: [namespace, all-namespaces, for, types, output, no-headers, chunk-size]
+      outputs: [name, json, yaml, "jsonpath=*"]
+    explain:
+      flags: [recursive, api-version, output]
+      outputs: [plaintext, plaintext-openapiv2]
+    api-resources:
+      flags: [namespaced, api-group, verbs, output, no-headers, sort-by, cached]
+      outputs: [wide, name]
+    api-versions:
+      flags: []
+    version:
+      flags: [output, client]
+      outputs: [json, yaml]
+    auth can-i:
+      flags: [namespace, all-namespaces, list, subresource, no-headers, quiet]
+    rollout history:
+      flags: [namespace, revision, output, selector]
+      outputs: [name, json, yaml, "jsonpath=*"]
+  sensitiveTypes: [secret, secrets]
+  sensitiveOutputs: [name, wide]
   output: {defaultBytes: 16384, maxBytes: 65536, timeoutSeconds: 30, maxTimeoutSeconds: 60}
 
 facetDefinitions:

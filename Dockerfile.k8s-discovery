@@ -1,24 +1,23 @@
 # rw-discovery-codecollection: the k8s-discovery capability image, not a
 # Robot codebundle image.
 #
-# Image == capability, 1:1 (rw-checks-codecollection's
-# sdk/runwhen_capability/loader.py -- discover_capability_dir's docstring).
-# This repo ships exactly one capability, so unlike rw-checks-codecollection
-# there is only one Dockerfile.
+# Image == capability, 1:1 (runwhen_capability/loader.py --
+# discover_capability_dir's docstring). This repo ships exactly one
+# capability, so unlike rw-checks-codecollection there is only one
+# Dockerfile.
 #
 # It ships:
-#   - the runwhen_capability SDK and its rwtask task host (installed from
-#     rw-checks-codecollection, pinned by commit sha -- see pyproject.toml)
+#   - the runwhen_capability SDK and its rwtask task host (the
+#     runwhen-capability release pyproject.toml pins)
 #   - rwdiscovery/, the Python core (chain, sanitize, rollups, pack, sync)
 #   - the k8s-discovery capability's tasks (capabilities/k8s-discovery/)
 #
 # Dependencies are pinned by one of two mechanisms:
-#   runwhen-capability (the SDK) -- pinned by a full git commit sha in
-#     pyproject.toml, the VCS equivalent of a hash pin. pip's
-#     --require-hashes mode does not support VCS requirements at all, so
-#     this is installed in its OWN, non-hash-checked `pip install` step,
-#     same as rw-checks-codecollection installs its SDK layer unpinned by
-#     hash (`pip install /app`).
+#   runwhen-capability (the SDK) -- pinned to a release tag, here and in
+#     pyproject.toml. pip's --require-hashes mode does not support VCS
+#     requirements at all, so this is installed in its OWN,
+#     non-hash-checked `pip install` step, same as rw-checks-codecollection
+#     installs its SDK layer unpinned by hash (`pip install /app`).
 #   kubernetes, jmespath (the two runtime dependencies this capability talks
 #     to the cluster and evaluates expressions through directly) -- pip-
 #     compiled with hashes into requirements.txt (scripts/gen_pip_hashes.sh,
@@ -54,8 +53,8 @@ FROM ${BASE_IMAGE} AS builder
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# ca-certificates: TLS for cloning the SDK's pinned commit over HTTPS. git:
-# build-time only, for pip to clone that commit (see the runwhen-capability
+# ca-certificates: TLS for cloning the SDK's pinned release over HTTPS. git:
+# build-time only, for pip to clone that release (see the runwhen-capability
 # install step below) -- confined to this stage; see the final stage's
 # header comment for why it must never reach the shipped image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -76,13 +75,13 @@ COPY requirements.txt /build/requirements.txt
 RUN pip install --no-cache-dir --require-hashes -r /build/requirements.txt \
     && rm -rf /build
 
-# The SDK, pinned by commit sha in pyproject.toml -- see the header comment
+# The SDK, at the release pyproject.toml pins -- see the header comment
 # above for why this is a separate, non-hash-checked install step.
 WORKDIR /app
 COPY pyproject.toml README.md LICENSE /app/
 COPY rwdiscovery /app/rwdiscovery
 RUN pip install --no-cache-dir --no-deps /app \
-    && pip install --no-cache-dir "runwhen-capability @ git+https://github.com/runwhen-contrib/rw-checks-codecollection.git@010799fb68dbfb90119f71c591b63c736a1158ff"
+    && pip install --no-cache-dir "runwhen-capability @ git+https://github.com/runwhen-contrib/runwhen-capability@v0.1.0"
 
 # ---------------------------------------------------------------------------
 # kubectl -- platform-contract §7's `cli` task execs the real binary; fetched

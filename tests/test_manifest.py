@@ -216,10 +216,17 @@ def test_dockerfile_schemas_label_key_matches_the_catalog_reader():
 def test_manifest_label_script_reports_the_real_manifests_output_schemas():
     outputs = _run_manifest_label_script()
     decoded = json.loads(base64.b64decode(outputs["schemas_b64"]))
-    assert decoded.keys() == {"schemas/discovery_summary.v1.json", "schemas/k8s_object.v1.json"}
+    assert decoded.keys() == {
+        "schemas/discovery_summary.v1.json",
+        "schemas/k8s_object.v1.json",
+        "schemas/cli_result.v1.json",
+    }
     assert decoded["schemas/discovery_summary.v1.json"] == json.loads(
         (CAPABILITY_DIR / "schemas" / "discovery_summary.v1.json").read_text()
     )
     assert decoded["schemas/k8s_object.v1.json"] == json.loads(
         (CAPABILITY_DIR / "schemas" / "k8s_object.v1.json").read_text()
+    )
+    assert decoded["schemas/cli_result.v1.json"] == json.loads(
+        (CAPABILITY_DIR / "schemas" / "cli_result.v1.json").read_text()
     )

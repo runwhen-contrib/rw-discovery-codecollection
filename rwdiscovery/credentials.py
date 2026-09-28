@@ -4,7 +4,7 @@ directory.
 
 The kubeconfig string never touches an ambient location -- no
 `~/.kube/config`, no `KUBECONFIG` env var (which would also race across
-concurrent tasks in one process: `inspect`'s `maxConcurrentPerPod` is 4).
+concurrent tasks in one process: `cli`'s `maxConcurrentPerPod` is 4).
 It is written to a temp file INSIDE `workdir` (the request's scope
 directory, per `Context.workdir`), and the kubernetes client library's own
 incidental temp files -- materialised from inline base64 CA/cert/key data,
@@ -14,7 +14,7 @@ task host cleans up the scope, none of it lingers in the pod's shared
 `/tmp`, and the raw kubeconfig file itself is deleted the moment it has
 been loaded.
 
-An optional `context` (the `discover`/`inspect` tasks' own `context` input)
+An optional `context` (the `discover` task's own `context` input)
 selects one of the kubeconfig's named contexts instead of its
 current-context -- the same kubeconfig credential can serve any cluster it
 carries a context for. It is checked against the kubeconfig's own

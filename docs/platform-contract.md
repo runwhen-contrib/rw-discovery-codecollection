@@ -239,8 +239,10 @@ never learns a secret's name, or where it is actually stored.
   always receives the same plain string either way. There is no separate, scoped-down discovery
   credential: this is ordinarily the same kubeconfig a workspace's Kubernetes tasks use, so it is
   on this capability, not that credential's own RBAC, to guarantee it only ever reads. `discover`
-  and `inspect` both build their API client through `rwdiscovery/k8s_client.py`'s `K8sClient`, the
-  only place this package calls the Kubernetes API, which refuses to issue anything but a `GET`.
+  builds its API client through `rwdiscovery/k8s_client.py`'s `K8sClient`, the only place this
+  package calls the Kubernetes API library directly, which refuses to issue anything but a `GET`.
+  `cli` (§7) is the one exception to "never shells out": it execs the real `kubectl` binary, and
+  its own read-only guarantee comes from the pack's `cli` block's allow-list instead of `K8sClient`.
 - **`runwhen.resourceSync`** -- a JSON string: `{"apiBaseUrl", "token", "workspace", "expiresAt"}`.
   The token is a short-lived JWT, minted specifically for this one run, scoped to
   `resources:sync`, and bound to both the workspace and the capability run that requested it. The
@@ -263,9 +265,9 @@ outputs. `k8s-discovery` declares three:
   `kubeconfig` credential into an API client, confirms the cluster is actually reachable, and
   reads two small facts every following task can reference (`serverVersion`, the cluster's
   `clusterUid`). If the cluster can't be reached, the whole request fails here, before `discover`
-  or `inspect` ever starts. `context` is the same input those two tasks accept (below) -- it must
-  be given here too, so this precheck actually covers the context the request itself uses rather
-  than always checking the kubeconfig's default current-context.
+  ever starts. `context` is the same input `discover` accepts (below) -- it must be given here
+  too, so this precheck actually covers the context the request itself uses rather than always
+  checking the kubeconfig's default current-context.
 - **`discover`** -- inputs `{clusterName, namespaces?, excludeNamespaces?, configMapValues?,
   overlay?, context?}`; output `summary` (kind `rw.discovery_summary.v1`):
   `{syncId, packDigest, counts, partitions, durationMs, serverVersion, clusterUid,
@@ -284,23 +286,27 @@ outputs. `k8s-discovery` declares three:
   run; a rollup facet whose sources are listed there was omitted from every item it would have
   applied to, rather than pushed with a false empty or zero count (the platform keeps the last
   value it had and ages it into `stale` by the facet's own TTL instead).
-- **`inspect`** -- inputs `{clusterName, kind, name, namespace?, apiVersion?, mode: "get" |
-  "describe", context?}`; output `object` (kind `rw.k8s_object.v1`): `{path, found, object?,
-  describe?, events?}`. Declared `readOnly: true` in the manifest: it never writes to the
-  platform's inventory, and never shells out to anything. It computes its `path` using the same
-  chain-building rules `discover` uses, so the two never disagree about a given object's identity.
+- **`cli`** -- inputs `{clusterName, argv, maxBytes?, timeoutSeconds?}`; output `result` (kind
+  `rw.cli_result.v1`): `{argv, exitCode, stdout, stderr, truncated, stdoutBytes, durationMs,
+  rejected?}`. Declared `readOnly: true` and `invocation: [sync]` in the manifest: papi calls it
+  synchronously, and it never writes to the platform's inventory. It is this capability's one
+  exception to "never shells out" -- see §7 for its full validation and execution contract.
+  `inspect` (a narrower, sanitized `get`/`describe` over the Kubernetes API, no shell) has been
+  retired in `cli`'s favour: `cli` is now the agent's one read path into a cluster.
 
-Both tasks share the same sanitizer, so nothing an `inspect` caller can read through `get` or
-`describe` differs from what `discover`'s bulk push would already have stored -- see this repo's
+`discover`'s bulk push is the only thing that goes through the sanitizer -- see this repo's
 README, "Sanitization policy" section, for the full policy (what is dropped, what is masked, and
-why).
+why). `cli`'s read-only guarantee is a different mechanism entirely: the pack's `cli` block's
+verb/flag/sensitive-type allow-list (§7), not this sanitizer.
 
-`context`, on both tasks, names one of the `kubeconfig` credential's own contexts to build the API
-client from, instead of its current-context -- the credential itself is unchanged; `context` only
-selects which of its contexts this particular run addresses. Checked against the kubeconfig's own
-`contexts:` list before either task does anything else; a context the kubeconfig does not have
-fails the task immediately, naming it (`rwdiscovery/credentials.py`'s `KubeconfigError`), never a
-silent fall-back to current-context.
+`context`, on `discover` (the only task that still accepts it -- `cli` has no `context` input of
+its own and always runs against the kubeconfig's current-context, §7), names one of the
+`kubeconfig` credential's own contexts to build the API client from, instead of its
+current-context -- the credential itself is unchanged; `context` only selects which of its
+contexts this particular run addresses. Checked against the kubeconfig's own `contexts:` list
+before the task does anything else; a context the kubeconfig does not have fails the task
+immediately, naming it (`rwdiscovery/credentials.py`'s `KubeconfigError`), never a silent
+fall-back to current-context.
 
 ## 6. Capability image releases
 
@@ -317,7 +323,7 @@ are the reference implementations this section mirrors):
   blob -- never a separate build artifact, and never a platform release -- to learn the
   capability's id, version, and full manifest.
 - **The output schemas ride the image too.** A task output's `schema:` value (e.g.
-  `./schemas/k8s_object.v1.json`) only names the JSON Schema file, relative to `manifest.yaml`;
+  `./schemas/cli_result.v1.json`) only names the JSON Schema file, relative to `manifest.yaml`;
   the file itself does not otherwise leave this repo. A second OCI label,
   `com.runwhen.capability.schemas.v1`, carries the base64 of one compact JSON object mapping every
   schema file in the capability's `schemas/` directory (not only the ones the current manifest
@@ -398,7 +404,7 @@ errors; this capability's is authoritative, since it is the one that actually ex
 
 A rejection is `{reason, hint}` -- never raised, never partially executed.
 
-**Execution** (`rwdiscovery/cli.py`'s `run_cli`, mirroring how `inspect` receives its credential --
+**Execution** (`rwdiscovery/cli.py`'s `run_cli`, mirroring how `discover` receives its credential --
 `tasks.py`): the `kubeconfig` credential is written to a 0600 file inside the request's own scope
 directory (the same convention `credentials.py` uses for the Python client), and `kubectl` is run as
 a real subprocess -- no shell -- as `kubectl --kubeconfig <file> --request-timeout=<t>s <argv>`,

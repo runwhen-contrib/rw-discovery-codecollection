@@ -54,6 +54,16 @@ class DiscoverySummary(BaseModel):
     rollupSourcesUnavailable: dict[str, list[str]] = Field(default_factory=dict)
 
 
+# `inspect` was retired in favour of `cli` (platform-contract §7: one
+# allow-listed `kubectl` command is now the agent's one read path), but this
+# model and its published schema (schemas/k8s_object.v1.json) stay exactly
+# as they were -- a published schema never changes or disappears
+# (docs/platform-contract.md's "versioned, immutable schemas" section), and
+# the model's own docstring below is baked into that schema's "description"
+# (pydantic's json_schema()), so even a docstring edit here would drift the
+# checked-in file out of sync with what export_schemas.py regenerates
+# (tests/test_schemas.py enforces this). Do not edit the docstring; this
+# comment is the only place left to note why an unreferenced model stays.
 class K8sObjectResult(BaseModel):
     """Output of the `inspect` task -- `rw.k8s_object.v1`. Exactly one of
     `object` (mode `get`) or `describe`+`events` (mode `describe`) is set

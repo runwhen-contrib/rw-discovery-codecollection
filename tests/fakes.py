@@ -63,12 +63,12 @@ class RecordingApiClient:
     `K8sClient.get_raw` calls (`call_api`) -- unlike `FakeK8sClient` above
     (which replaces `K8sClient` itself, the seam every other test in this
     suite uses), this sits one level lower, so a test can drive a full
-    `run_discover`/`run_inspect` through the REAL `K8sClient.get_raw` and
-    assert on the HTTP method it actually issued (decision 7: this
-    capability must never issue anything but a GET, no matter what the
-    credential itself could do). Wraps a `FakeK8sClient` for its canned
-    responses, but speaks the real transport's shape: an `ApiException` on
-    error, an object with `.data` (raw JSON bytes) on success."""
+    `run_discover` through the REAL `K8sClient.get_raw` and assert on the
+    HTTP method it actually issued (decision 7: this capability must never
+    issue anything but a GET, no matter what the credential itself could
+    do). Wraps a `FakeK8sClient` for its canned responses, but speaks the
+    real transport's shape: an `ApiException` on error, an object with
+    `.data` (raw JSON bytes) on success."""
 
     fake: FakeK8sClient
     calls: list[tuple[str, str]] = field(default_factory=list)

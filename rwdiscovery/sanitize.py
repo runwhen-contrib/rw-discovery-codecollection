@@ -2,8 +2,10 @@
 security reviewer asks. Nothing leaves the cluster that a read-only platform
 user shouldn't see. This module is the single place that decides what of a raw
 Kubernetes object becomes the stored `document`/`status` (platform-contract §3's
-Item shape) -- `discover` and `inspect` both call it, so no caller of either
-task can pull a Secret's data through the side door.
+Item shape) -- `discover` is its only caller now (`inspect` used to share it
+too, before being retired in favour of `cli`, platform-contract §7, whose
+read-only guarantee is a pack allow-list instead of this sanitizer), so no
+caller of `discover` can pull a Secret's data through the side door.
 
 Document shape this module produces (ours to define -- consumed only by our
 own pack.yaml facet/rule JMESPath expressions, never re-served as a literal

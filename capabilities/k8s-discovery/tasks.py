@@ -9,7 +9,6 @@ from runwhen_capability import Context, setup, task
 from rwdiscovery import cli as cli_lib
 from rwdiscovery import connect as connect_lib
 from rwdiscovery import discover as discover_lib
-from rwdiscovery import inspect as inspect_lib
 
 
 @setup(outputs=["serverVersion", "clusterUid"])
@@ -39,31 +38,6 @@ def discover(
         context=context,
     )
     return {"summary": summary}
-
-
-@task(outputs={"object": "rw.k8s_object.v1"})
-def inspect(
-    ctx: Context,
-    cluster_name: str,
-    kind: str,
-    name: str,
-    mode: str,
-    namespace: str | None = None,
-    api_version: str | None = None,
-    context: str | None = None,
-):
-    result = inspect_lib.run_inspect(
-        kubeconfig_yaml=ctx.credential("kubeconfig"),
-        cluster_name=cluster_name,
-        kind=kind,
-        name=name,
-        namespace=namespace,
-        api_version=api_version,
-        mode=mode,
-        workdir=ctx.workdir,
-        context=context,
-    )
-    return {"object": result}
 
 
 @task(outputs={"result": "rw.cli_result.v1"})

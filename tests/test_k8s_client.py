@@ -1,7 +1,7 @@
 """`K8sClient`'s own read-only guard (decision 7) -- a direct, fast unit
 test alongside the fuller `RecordingApiClient`-based checks in
-`test_discover_e2e.py`/`test_inspect.py`, which prove no real call path ever
-reaches this with a non-GET method in the first place."""
+`test_discover_e2e.py`, which prove no real call path ever reaches this
+with a non-GET method in the first place."""
 
 from __future__ import annotations
 

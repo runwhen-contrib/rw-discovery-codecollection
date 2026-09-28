@@ -103,8 +103,10 @@ class K8sClient:
         return json.loads(response.data)
 
     def get_object(self, path: str) -> dict | None:
-        """One object by its exact API path. `None` on 404 -- the
-        `inspect` task's `found: false`."""
+        """One object by its exact API path. `None` on 404 -- `discover`'s
+        per-namespace fallback (`_get_namespace_or_stub`) and `connect`'s
+        kube-system lookup both treat this as "not found" rather than
+        raising."""
         try:
             return self.get_raw(path)
         except ApiError as exc:
@@ -118,7 +120,8 @@ def path_segment(value: str, what: str) -> str:
     rule (apimachinery `IsValidPathSegmentName`): never empty, `.` or `..`,
     never containing `/` or `%` -- no real object can be named that way, so
     such a value can only be an attempt to address a different API path
-    (`inspect`'s inputs come from an agent). Everything else is
+    (this capability's own inputs, e.g. `discover`'s `namespaces`, come
+    straight from a request). Everything else is
     percent-encoded, so `?`, `#` or whitespace can't become a query string
     or fragment; the API server decodes it back."""
     if not value or value in (".", "..") or "/" in value or "%" in value:

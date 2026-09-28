@@ -301,8 +301,8 @@ jobs:
           by_name = {t["name"]: t for t in manifest["tasks"]}
           if by_name.get("discover", {}).get("readOnly") is not False:
               sys.exit("manifest.yaml: discover task must declare readOnly: false")
-          if by_name.get("inspect", {}).get("readOnly") is not True:
-              sys.exit("manifest.yaml: inspect task must declare readOnly: true")
+          if by_name.get("cli", {}).get("readOnly") is not True:
+              sys.exit("manifest.yaml: cli task must declare readOnly: true")
           print("manifest.yaml: has all required top-level keys, capability=k8s-discovery, mode=stateless")
           PY
 
@@ -414,8 +414,8 @@ jobs:
             python3 -c "import yaml; d = yaml.safe_load(open('capabilities/k8s-discovery/manifest.yaml')); assert d['capability'] == 'k8s-discovery'"
 
           # kubectl ships for the `cli` task only (platform-contract §7), pinned and
-          # sha256-verified in the Dockerfile; discover and inspect still talk to the
-          # API over HTTP. Assert the image carries exactly the pinned version.
+          # sha256-verified in the Dockerfile; discover still talks to the API over
+          # HTTP. Assert the image carries exactly the pinned version.
           want=$(sed -n 's/^ARG KUBECTL_VERSION=//p' Dockerfile.k8s-discovery)
           got=$(docker run --rm "${IMG}" kubectl version --client -o json \
             | python3 -c 'import json,sys; print(json.load(sys.stdin)["clientVersion"]["gitVersion"])')

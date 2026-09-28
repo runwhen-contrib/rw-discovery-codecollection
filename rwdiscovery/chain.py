@@ -6,7 +6,9 @@ written down (the path/URN grammar, platform-contract §1), and this module
 Kubernetes object (the chain rules below). papi mints the path/URN from a
 chain; this module only ever produces the chain -- it never builds a path
 string itself. `path.py` carries a local, read-only mirror of papi's path
-grammar, used only by the `inspect` task's human-facing output.
+grammar, built for the `inspect` task's human-facing output; `inspect` has
+since been retired in favour of `cli` (platform-contract §7), which shells
+out to the real `kubectl` instead and has no need of a path mirror.
 
 Rules implemented here:
   - root type is `cluster`, named by the `clusterName` input;
@@ -572,8 +574,8 @@ def parse_api_version(api_version: str) -> tuple[str, str]:
 
 def chain_for_object(cluster_name: str, obj: dict, plural_hint: str | None = None) -> tuple[list[ChainItem], TypeSpec]:
     """Convenience wrapper reading `apiVersion`/`kind`/`metadata` straight
-    off a raw object -- what `discover.py` and `inspect.py` call per item,
-    and what `tests/test_chain_vectors.py` drives from
+    off a raw object -- what `discover.py` calls per item, and what
+    `tests/test_chain_vectors.py` drives from
     `packs/kubernetes/vectors/chain_vectors.json`.
 
     `plural_hint` should be the real API plural from discovery whenever the

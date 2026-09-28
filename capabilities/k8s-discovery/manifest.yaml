@@ -20,9 +20,9 @@ execution:
   mode: stateless
   serviceAccountToken: true       # in-cluster discovery authenticates as the pod's own ServiceAccount; the token is only mounted for capabilities that declare this
   maxPodsPerPool: 2
-  maxConcurrentPerPod: 4          # inspect calls are small; discover is one long request
+  maxConcurrentPerPod: 4          # cli calls are small; discover is one long request
   idleTtlSeconds: 900
-  requestTimeoutSeconds: 1500     # discover's ceiling for a large cluster; inspect finishes in seconds
+  requestTimeoutSeconds: 1500     # discover's ceiling for a large cluster; cli is bounded well under this by its own pack.yaml output.maxTimeoutSeconds
   resources:
     cpuRequest: "100m"
     cpuLimit: "1"
@@ -54,7 +54,7 @@ needs:
 setup:
   task: connect                    # materialise the kubeconfig, check access, read server version + kube-system UID
   inputs:
-    context: { from: request, optional: true }  # same named kubeconfig context discover/inspect build their own client from
+    context: { from: request, optional: true }  # same named kubeconfig context discover builds its own client from
   outputs:
     serverVersion: { type: string }
     clusterUid:    { type: string }
@@ -75,22 +75,6 @@ tasks:
       summary:
         kind: rw.discovery_summary.v1
         schema: ./schemas/discovery_summary.v1.json
-
-  - name: inspect
-    description: Get or describe one Kubernetes object, read-only, no shell
-    readOnly: true
-    inputs:
-      clusterName: { from: request }
-      kind:        { from: request }
-      name:        { from: request }
-      namespace:   { from: request, optional: true }
-      apiVersion:  { from: request, optional: true }
-      mode:        { from: request }               # "get" | "describe"
-      context:     { from: request, optional: true }  # named kubeconfig context; defaults to current-context
-    outputs:
-      object:
-        kind: rw.k8s_object.v1
-        schema: ./schemas/k8s_object.v1.json
 
   - name: cli
     description: Run one allow-listed, read-only kubectl command and return its output

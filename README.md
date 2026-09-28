@@ -323,4 +323,5 @@ This repo depends on `runwhen_capability` and its `rwtask` host from
 [runwhen-capability](https://github.com/runwhen-contrib/runwhen-capability), pinned to a release
 tag in `pyproject.toml` and, identically, in `Dockerfile.k8s-discovery` (pip's `--require-hashes`
 mode does not support VCS requirements at all, so this one dependency installs in its own,
-non-hash-checked step; see that file's header comment). Move both pins to a new release together.
+non-hash-checked step; see that file's header comment). Move both pins, and the `@v...` tag of the
+shared image workflow `.github/workflows/build-push.yaml` calls, to a new release together.

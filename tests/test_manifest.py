@@ -3,8 +3,10 @@ codecollection's tests/test_manifest.py."""
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
+from runwhen_capability.label import encode_manifest
 from runwhen_capability.loader import load_capability, load_manifest
 
 CAPABILITY_DIR = Path(__file__).resolve().parent.parent / "capabilities" / "k8s-discovery"
@@ -14,7 +16,6 @@ REQUIRED_KEYS = {
     "capability",
     "version",
     "description",
-    "image",
     "execution",
     "appliesTo",
     "needs",
@@ -28,6 +29,18 @@ def test_manifest_has_required_top_level_keys():
     manifest = load_manifest(CAPABILITY_DIR)
     missing = REQUIRED_KEYS - manifest.keys()
     assert not missing, missing
+
+
+def test_manifest_has_no_image_key():
+    """An image cannot know its own digest: the manifest rides the image as
+    the com.runwhen.capability.manifest.v1 label, and `rwtask label`
+    refuses a manifest that still names an image."""
+    assert "image" not in load_manifest(CAPABILITY_DIR)
+
+
+def test_manifest_label_round_trips_the_manifest_bytes():
+    value = encode_manifest(CAPABILITY_DIR)
+    assert base64.b64decode(value) == (CAPABILITY_DIR / "manifest.yaml").read_bytes()
 
 
 def test_manifest_capability_id_and_execution_mode():

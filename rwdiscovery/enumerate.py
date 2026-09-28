@@ -24,9 +24,10 @@ class ApiResource:
 
 
 def resources_from_list(group: str, version: str, body: dict) -> list[ApiResource]:
-    """Public so `inspect.py` can resolve one (kind, apiVersion) directly
-    against a single group's discovery document, instead of paying for a
-    full `discover_resources()` sweep just to find one kind."""
+    """One group/version's discovery document (`/api/v1` or
+    `/apis/<group>/<version>`) parsed into its listable `ApiResource`s --
+    the per-group unit `discover_resources()` below calls once per group
+    (core, then each API group's preferred version) and concatenates."""
     out: list[ApiResource] = []
     for r in body.get("resources", []):
         name = r.get("name", "")

@@ -1,0 +1,463 @@
+{
+  "comment": "Platform CLI v1.1 shared validator vectors (cli-allowlist-v1.1.md). Copy verbatim into each repo's tests. max_bytes = 16384 (the pack default), so the logs default --limit-bytes is 65536.",
+  "maxBytes": 16384,
+  "cases": [
+    {
+      "command": "get pods -n x",
+      "ok": true,
+      "verb": "get",
+      "argv": [
+        "get",
+        "pods",
+        "--namespace=x"
+      ],
+      "grep": null
+    },
+    {
+      "command": "kubectl logs deploy/x -n y --since=15m --grep=error",
+      "ok": true,
+      "verb": "logs",
+      "argv": [
+        "logs",
+        "deploy/x",
+        "--namespace=y",
+        "--since=15m",
+        "--limit-bytes=65536"
+      ],
+      "grep": "error"
+    },
+    {
+      "command": "logs deploy/x -n y",
+      "ok": true,
+      "verb": "logs",
+      "argv": [
+        "logs",
+        "deploy/x",
+        "--namespace=y",
+        "--tail=200",
+        "--limit-bytes=65536"
+      ],
+      "grep": null
+    },
+    {
+      "command": "auth can-i list pods -n x",
+      "ok": true,
+      "verb": "auth can-i",
+      "argv": [
+        "auth",
+        "can-i",
+        "list",
+        "pods",
+        "--namespace=x"
+      ],
+      "grep": null
+    },
+    {
+      "command": "rollout history deploy/x -n y",
+      "ok": true,
+      "verb": "rollout history",
+      "argv": [
+        "rollout",
+        "history",
+        "deploy/x",
+        "--namespace=y"
+      ],
+      "grep": null
+    },
+    {
+      "command": "get secret -n x",
+      "ok": true,
+      "verb": "get",
+      "argv": [
+        "get",
+        "secret",
+        "--namespace=x"
+      ],
+      "grep": null
+    },
+    {
+      "command": "get secrets -o name",
+      "ok": true,
+      "verb": "get",
+      "argv": [
+        "get",
+        "secrets",
+        "--output=name"
+      ],
+      "grep": null
+    },
+    {
+      "command": "get secret/s1 -o wide",
+      "ok": true,
+      "verb": "get",
+      "argv": [
+        "get",
+        "secret/s1",
+        "--output=wide"
+      ],
+      "grep": null
+    },
+    {
+      "command": "describe secret s1 -n x",
+      "ok": true,
+      "verb": "describe",
+      "argv": [
+        "describe",
+        "secret",
+        "s1",
+        "--namespace=x"
+      ],
+      "grep": null
+    },
+    {
+      "command": "get pods -oyaml",
+      "ok": true,
+      "verb": "get",
+      "argv": [
+        "get",
+        "pods",
+        "--output=yaml"
+      ],
+      "grep": null
+    },
+    {
+      "command": "get pods -o=json",
+      "ok": true,
+      "verb": "get",
+      "argv": [
+        "get",
+        "pods",
+        "--output=json"
+      ],
+      "grep": null
+    },
+    {
+      "command": "get pods -A -l app=web",
+      "ok": true,
+      "verb": "get",
+      "argv": [
+        "get",
+        "pods",
+        "--all-namespaces",
+        "--selector=app=web"
+      ],
+      "grep": null
+    },
+    {
+      "command": "get pods -Al app=web",
+      "ok": true,
+      "verb": "get",
+      "argv": [
+        "get",
+        "pods",
+        "--all-namespaces",
+        "--selector=app=web"
+      ],
+      "grep": null
+    },
+    {
+      "command": "get pods -o jsonpath={.items[*].metadata.name}",
+      "ok": true,
+      "verb": "get",
+      "argv": [
+        "get",
+        "pods",
+        "--output=jsonpath={.items[*].metadata.name}"
+      ],
+      "grep": null
+    },
+    {
+      "command": "logs deploy/x -c api -p --tail=50",
+      "ok": true,
+      "verb": "logs",
+      "argv": [
+        "logs",
+        "deploy/x",
+        "--container=api",
+        "--previous",
+        "--tail=50",
+        "--limit-bytes=65536"
+      ],
+      "grep": null
+    },
+    {
+      "command": "logs deploy/x --previous=true --since 1h --limit-bytes=1000000",
+      "ok": true,
+      "verb": "logs",
+      "argv": [
+        "logs",
+        "deploy/x",
+        "--previous=true",
+        "--since=1h",
+        "--limit-bytes=65536"
+      ],
+      "grep": null
+    },
+    {
+      "command": "logs deploy/x --grep=ERROR|FATAL",
+      "ok": true,
+      "verb": "logs",
+      "argv": [
+        "logs",
+        "deploy/x",
+        "--tail=200",
+        "--limit-bytes=65536"
+      ],
+      "grep": "ERROR|FATAL"
+    },
+    {
+      "command": "top pods -A --sort-by=cpu",
+      "ok": true,
+      "verb": "top",
+      "argv": [
+        "top",
+        "pods",
+        "--all-namespaces",
+        "--sort-by=cpu"
+      ],
+      "grep": null
+    },
+    {
+      "command": "events -n x --for deploy/y",
+      "ok": true,
+      "verb": "events",
+      "argv": [
+        "events",
+        "--namespace=x",
+        "--for=deploy/y"
+      ],
+      "grep": null
+    },
+    {
+      "command": "api-resources --namespaced=true -o wide",
+      "ok": true,
+      "verb": "api-resources",
+      "argv": [
+        "api-resources",
+        "--namespaced=true",
+        "--output=wide"
+      ],
+      "grep": null
+    },
+    {
+      "command": "version -o json",
+      "ok": true,
+      "verb": "version",
+      "argv": [
+        "version",
+        "--output=json"
+      ],
+      "grep": null
+    },
+    {
+      "command": "",
+      "ok": false,
+      "reason": "empty"
+    },
+    {
+      "command": "kubectl",
+      "ok": false,
+      "reason": "empty"
+    },
+    {
+      "command": "get pods 'unterminated",
+      "ok": false,
+      "reason": "unparsable"
+    },
+    {
+      "command": "delete pod x",
+      "ok": false,
+      "reason": "verb-not-allowed"
+    },
+    {
+      "command": "exec -it x -- sh",
+      "ok": false,
+      "reason": "verb-not-allowed"
+    },
+    {
+      "command": "rollout restart deploy/x",
+      "ok": false,
+      "reason": "verb-not-allowed"
+    },
+    {
+      "command": "get pods | grep x",
+      "ok": false,
+      "reason": "no-shell"
+    },
+    {
+      "command": "get pods; rm -rf /",
+      "ok": false,
+      "reason": "no-shell"
+    },
+    {
+      "command": "get pods $(id)",
+      "ok": false,
+      "reason": "no-shell"
+    },
+    {
+      "command": "get pods --kubeconfig=/tmp/k",
+      "ok": false,
+      "reason": "flag-not-allowed"
+    },
+    {
+      "command": "get pods --as admin",
+      "ok": false,
+      "reason": "flag-not-allowed"
+    },
+    {
+      "command": "logs -f deploy/x",
+      "ok": false,
+      "reason": "flag-not-allowed"
+    },
+    {
+      "command": "get pods -shttps://evil.example.com",
+      "ok": false,
+      "reason": "flag-not-allowed"
+    },
+    {
+      "command": "get pods -s https://evil.example.com",
+      "ok": false,
+      "reason": "flag-not-allowed"
+    },
+    {
+      "command": "get pods --server=https://evil.example.com",
+      "ok": false,
+      "reason": "flag-not-allowed"
+    },
+    {
+      "command": "get secret s1 -v=8",
+      "ok": false,
+      "reason": "flag-not-allowed"
+    },
+    {
+      "command": "get pods --v=9",
+      "ok": false,
+      "reason": "flag-not-allowed"
+    },
+    {
+      "command": "get pods --profile-output=/tmp/p",
+      "ok": false,
+      "reason": "flag-not-allowed"
+    },
+    {
+      "command": "get pods --raw /api",
+      "ok": false,
+      "reason": "flag-not-allowed"
+    },
+    {
+      "command": "get pods -- --kubeconfig=/x",
+      "ok": false,
+      "reason": "flag-not-allowed"
+    },
+    {
+      "command": "get pods -w",
+      "ok": false,
+      "reason": "flag-not-allowed"
+    },
+    {
+      "command": "get pods --previous",
+      "ok": false,
+      "reason": "flag-not-allowed"
+    },
+    {
+      "command": "get pods -o yaml -o json",
+      "ok": false,
+      "reason": "flag-not-allowed"
+    },
+    {
+      "command": "get secret s1 -o yaml",
+      "ok": false,
+      "reason": "sensitive-type"
+    },
+    {
+      "command": "get secret s1 -oyaml",
+      "ok": false,
+      "reason": "sensitive-type"
+    },
+    {
+      "command": "get secret s1 -o=yaml",
+      "ok": false,
+      "reason": "sensitive-type"
+    },
+    {
+      "command": "get secret s1 --output yaml",
+      "ok": false,
+      "reason": "sensitive-type"
+    },
+    {
+      "command": "get secrets.v1 -o jsonpath={.data}",
+      "ok": false,
+      "reason": "sensitive-type"
+    },
+    {
+      "command": "get secret,pods -o json",
+      "ok": false,
+      "reason": "sensitive-type"
+    },
+    {
+      "command": "get Secret s1 -o yaml",
+      "ok": false,
+      "reason": "sensitive-type"
+    },
+    {
+      "command": "get SECRETS -o json",
+      "ok": false,
+      "reason": "sensitive-type"
+    },
+    {
+      "command": "get -n x secret s1 -ojsonpath={.data.password}",
+      "ok": false,
+      "reason": "sensitive-type"
+    },
+    {
+      "command": "get pods -o go-template={{.}}",
+      "ok": false,
+      "reason": "output-not-allowed"
+    },
+    {
+      "command": "get pods -o custom-columns-file=/etc/x",
+      "ok": false,
+      "reason": "output-not-allowed"
+    },
+    {
+      "command": "explain pods -o yaml",
+      "ok": false,
+      "reason": "output-not-allowed"
+    },
+    {
+      "command": "logs deploy/x --grep=(",
+      "ok": false,
+      "reason": "invalid-grep"
+    },
+    {
+      "command": "logs deploy/x --tail",
+      "ok": false,
+      "reason": "missing-value"
+    },
+    {
+      "command": "get pods -n",
+      "ok": false,
+      "reason": "missing-value"
+    },
+    {
+      "command": "logs deploy/x --limit-bytes=abc",
+      "ok": false,
+      "reason": "bad-value"
+    },
+    {
+      "command": "get pods --show-labels=maybe",
+      "ok": false,
+      "reason": "bad-value"
+    },
+    {
+      "command": "logs deploy/x --limit-bytes=0",
+      "ok": false,
+      "reason": "bad-value"
+    },
+    {
+      "command": "logs deploy/x --limit-bytes=-5",
+      "ok": false,
+      "reason": "bad-value"
+    }
+  ]
+}

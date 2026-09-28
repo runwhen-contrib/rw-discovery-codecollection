@@ -3,6 +3,395 @@
 RunWhen CodeCollection for infrastructure discovery -- a **capability image**, built on the
 `runwhen_capability` SDK and its `rwtask` task host, not a Robot codebundle collection.
 
-Ships the `k8s-discovery` capability: it enumerates a Kubernetes cluster's resources, sanitizes
-them at the source, and pushes them to papi's resource inventory. See `capabilities/k8s-discovery/`
-once it lands on `resources-design` for the manifest, tasks and pack.
+## What this is
+
+This repository ships the **`k8s-discovery`** capability: it enumerates a Kubernetes cluster's
+resources via the API server, sanitizes every object at the source, and pushes them to papi's
+resource inventory over the resource-sync protocol. It runs read-only against the cluster
+(`discover` writes to papi; every other task is entirely read-only), and `discover`/`connect`
+never shell out to anything -- every read goes through the Kubernetes API directly. The one
+exception is **`cli`** (platform-contract §7): one allow-listed, read-only `kubectl` command,
+exec'd for real, no shell, and returned synchronously -- see that section for the full contract.
+`cli` is the agent's one read path into a cluster; the earlier `inspect` task (a narrower,
+sanitized `get`/`describe` over the Kubernetes API) has been retired in its favour.
+
+- **`rwdiscovery/`** -- the Python core: API enumeration and pagination, sanitization, the
+  Kubernetes identity/chain rules, rollups over ephemeral objects, the pack builder, and the sync
+  protocol client.
+- **`capabilities/k8s-discovery/`** -- the capability: a manifest (`manifest.yaml`), its tasks
+  (`tasks.py`: `connect` setup, `discover` and `cli` tasks), and the JSON Schema exported from
+  `rwdiscovery`'s models (`schemas/`).
+- **`packs/kubernetes/pack.yaml`** -- the Kubernetes pack: facet definitions and dependency rules
+  registered with papi at the start of every `discover` run. Builtin type specs come from
+  `rwdiscovery/chain.py`, not this file -- see its header comment.
+
+Code comments cite `platform-contract §N`, short for [`docs/platform-contract.md`](docs/platform-contract.md)
+-- this repo's own description of the papi interface (resource identity, packs, the sync protocol,
+credentials) that this package implements. This README is the public entry point and stands on its
+own; the platform-contract doc is there for anyone extending or reviewing the code who needs the
+interface spelled out precisely.
+
+## What `discover` does
+
+1. Registers the Kubernetes pack with papi. The registration body has a **static** part (type
+   specs, facet definitions, dependency rules that are identical for every cluster) -- idempotent
+   by digest, a no-op once nothing has changed -- and an **additive** part (`additiveTypes`,
+   `additiveFacetDefinitions`) carrying whatever *this* cluster's own discovery found: its
+   CustomResourceDefinitions, aggregated APIs, and their `k8sSummary` facets. Additive entries are
+   upserted and never removed by another cluster's registration; one conflicting with an existing
+   type is skipped (logged, not fatal) and any item of that type is later rejected when pushed,
+   failing only its own partition.
+2. Opens a full resource sync for this cluster's scope.
+3. Enumerates every listable API resource (`/api` and `/apis` preferred versions -- the same set
+   `kubectl api-resources --verbs=list` shows, so CRDs are included automatically), pages through
+   each one (`limit=500` + `continue`, cluster-wide where RBAC allows it, otherwise per
+   namespace), sanitizes every object, and pushes it in batches (cluster, then namespaces, then
+   everything else).
+4. Ephemeral types (pods, ReplicaSets, EndpointSlices, events, leases, ...) are never pushed as
+   resources -- but pods, ReplicaSets, EndpointSlices and events are still read, to compute
+   **rollups** (pod counts/restarts, service endpoint readiness, CronJob's recent runs, cluster
+   version/distribution) attached to the resources they belong to. A standalone Job is stored; a
+   Job owned by a CronJob is not, since a CronJob recreates it on every schedule. A `403`/error
+   reading one of these rollup sources (pods, ReplicaSets, EndpointSlices, Jobs, events, Nodes) is
+   never treated as "zero of that" -- a rollup facet whose sources aren't all readable is omitted
+   from every item it would apply to, rather than pushed with a false empty/zero value; the summary
+   (below) reports which sources were unavailable, per namespace.
+5. Commits the sync with one partition per `(type, parentPath)` listed, so papi can safely sweep
+   only what was actually observed as complete -- a `403` on a type/namespace is reported
+   `forbidden`, never silently treated as "zero of that type"; a rejected item (an unknown type, a
+   missing parent) fails its whole `(type, parentPath)` partition the same way. When an explicit
+   `namespaces` input is given and listing namespaces cluster-wide is itself forbidden, each one is
+   `GET` individually instead -- a minimal-privilege ServiceAccount is commonly granted `get` on
+   specific namespaces but not a cluster-wide `list`. A namespace that even that GET can't reach
+   still gets pushed as a stub (identity only, a marker annotation) so its children have a parent;
+   the namespace partition is reported `forbidden` either way. A namespace `namespaces`/
+   `excludeNamespaces` leaves out of scope is reported `excluded`, for the namespace itself and for
+   every namespaced type -- never `complete`, so it is never swept: narrowing scope stops
+   refreshing that namespace, it does not delete what was already synced for it.
+6. Returns a summary (`rw.discovery_summary.v1`): sync id, pack digest, counts, partition status
+   breakdown, duration, server version, cluster UID, and which rollup sources (if any) were
+   unavailable, keyed by namespace (`""` for the cluster scope). **No bulk data returns through
+   the capability's own result** -- everything else goes straight to papi through the sync API.
+
+Any failure after the sync is opened aborts it, rather than leaving it to expire on its own lease.
+
+### Inputs (`discover`)
+
+| input | type | required | notes |
+|---|---|---|---|
+| `clusterName` | string | yes | Becomes the cluster resource's name -- must match RunWhen Local's `cluster.name` so the later SLX<->resource join is string equality. |
+| `namespaces` | string[] | no | Explicit in-scope namespace list. When omitted, scope is every namespace minus `excludeNamespaces`. A namespace left out of scope this way is reported `excluded`, never swept -- see below. |
+| `excludeNamespaces` | string[] | no | Ignored if `namespaces` is set. A namespace this excludes (or one simply left off an explicit `namespaces` list) keeps whatever was already synced for it; it is not re-discovered, and it is not deleted either. |
+| `configMapValues` | `"store"` \| `"keysOnly"` | no (default `store`) | `keysOnly` drops ConfigMap values, keeping only per-key size/hash -- for a hosted, multi-tenant install. |
+| `overlay` | object | no | `{"redactions": ["dotted.path", ...]}` -- an early, minimal hook for platform-level extra redactions; a fuller, workspace-configured version of this is expected to land later. |
+| `context` | string | no | A named context in the `kubeconfig` credential to build the API client from, instead of its current-context -- lets one kubeconfig serve more than one cluster. A context this kubeconfig doesn't have fails the task immediately with a `KubeconfigError` naming it (`rwdiscovery/credentials.py`). |
+
+### What `cli` does
+
+The agent's one read path into a cluster (platform-contract §7): one allow-listed, read-only
+`kubectl` command, exec'd for real (no shell) and returned synchronously in the same response --
+no `capability_runs` row, nothing stored. `packs/kubernetes/pack.yaml`'s `cli` block is the
+allow-list this validates every command against -- a closed set of `verbs` (`get`, `describe`,
+`logs`, `top`, `events`, `explain`, `api-resources`, `api-versions`, `version`, `auth can-i`,
+`rollout history`), a `denyFlags` list blocking anything that would escape read-only/
+cluster-scoped/non-interactive use, and `sensitiveTypes` restricting `get` on Secrets to the
+default table view, `-o name`, or `-o wide` -- never a full object dump. `rwdiscovery/cli.py`
+re-validates and executes every request; papi's own copy of the same rules exists only for early,
+helpful errors, since this capability's is authoritative. See platform-contract §7 for the full
+validation and execution contract, including the `--grep`/`--tail`/`--limit-bytes` handling.
+
+### Inputs (`cli`)
+
+| input | type | required | notes |
+|---|---|---|---|
+| `clusterName` | string | yes | |
+| `argv` | string[] | yes | The `kubectl` command, already validated by papi; re-validated here regardless. |
+| `maxBytes` | int | no | Clamped to the pack's `output.maxBytes` ceiling. |
+| `timeoutSeconds` | int | no | Clamped to the pack's `output.maxTimeoutSeconds` ceiling. |
+
+`cli` takes no `context` input of its own -- it always runs against the `kubeconfig` credential's
+current-context, same as a bare `kubectl` would.
+
+## Credentials
+
+Declared in `capabilities/k8s-discovery/manifest.yaml`'s `needs.credentials`, resolved by papi at
+lease time (platform-contract §4) -- the task never knows a secret name, only a kind:
+
+| name | kind | access | shape |
+|---|---|---|---|
+| `kubeconfig` | `k8s.kubeconfig` | read | the kubeconfig YAML, as a string |
+| `resourceSync` | `runwhen.resourceSync` | write | JSON: `{"apiBaseUrl", "token", "workspace", "expiresAt"}` -- a short-lived, lease-scoped token valid only on the resource-pack/resource-sync routes |
+
+The kubeconfig is written to a temp file **inside the request's own scope directory**
+(`rwdiscovery/credentials.py`), never to `~/.kube/config` or a `KUBECONFIG` env var -- both would
+race across `cli`'s concurrent requests in one pod. Even the Kubernetes client library's own
+incidental temp files (materialised from inline base64 CA/cert/key data) are redirected into that
+same scope directory, so the whole credential footprint is wiped when the task host cleans up the
+request, and none of it lingers in the pod's shared `/tmp`. The raw kubeconfig file itself is
+deleted the moment it has been loaded.
+
+**`context`.** By default the API client is built from the `kubeconfig` credential's own
+current-context, same as `kubectl` would. `discover` accepts an optional `context` input (see its
+Inputs table above) naming one of that same kubeconfig's other contexts instead -- useful when one
+kubeconfig credential is shared across more than one cluster/context. The named context is checked
+against the kubeconfig's own `contexts:` list before anything else happens; a context the
+kubeconfig doesn't have fails the task immediately with a `KubeconfigError` naming it, rather than
+silently falling back to current-context or surfacing a confusing error from deeper in the
+Kubernetes client library. `cli` has no `context` input of its own -- see its Inputs table above.
+
+**Read-only use.** There is no separate, scoped-down discovery credential -- the `kubeconfig` this
+capability is handed is ordinarily the same one a workspace's Kubernetes tasks use, and it is on
+this code, not that credential's own RBAC, to guarantee discovery never writes to the cluster.
+`rwdiscovery/k8s_client.py`'s `K8sClient` is the only place this package calls the Kubernetes API
+library directly, and it refuses to issue anything but a `GET` (`ReadOnlyViolationError`) -- there
+is no code path in `discover` that can reach a mutating verb. `cli` execs the real `kubectl`
+binary instead of going through `K8sClient`, so its read-only guarantee comes from a different
+place: the pack's `verbs`/`denyFlags`/`sensitiveTypes` allow-list (platform-contract §7). See
+platform-contract §4.
+
+**Not supported in v1:** a kubeconfig whose auth depends on an **exec credential plugin**
+(`gke-gcloud-auth-plugin`, `aws eks get-token`, `kubelogin`, ...) -- the image ships no shell tools
+and none of those plugin binaries (`Dockerfile.k8s-discovery`'s final stage has no `git`, no cloud
+CLIs, nothing to exec), so `client.Configuration()` fails to invoke one and the credential is
+rejected as a `KubeconfigError`, the same class covering any other malformed/unsupported
+kubeconfig -- never a silent misbehavior. A **static** kubeconfig -- a bearer token or a
+client-cert/key pair inline in the file, no `exec:` block -- works, which covers the common
+in-cluster case: a ServiceAccount's own kubeconfig (token or projected cert) that RunWhen Local or
+an operator generates for this capability to use. The manifest declares
+`execution.serviceAccountToken: true`, so the platform hands this capability exactly that kind of
+kubeconfig directly -- one pointing at the executor pod's own projected, rotating ServiceAccount
+token and CA -- with nothing for an operator to generate. The same limitation applies to the `cli`
+task's own `kubectl` invocation, for the same reason: no cloud-auth plugin binaries ship in the
+image.
+
+The one binary the final stage does ship is `kubectl` itself (**v1.37.1**), fetched and
+sha256-verified per-architecture at build time (`Dockerfile.k8s-discovery`'s `kubectl` stage) --
+used only by the `cli` task above.
+
+## Sanitization policy
+
+Nothing leaves the cluster that a read-only platform user shouldn't see. This is `discover`'s own
+read path (`rwdiscovery/sanitize.py`) -- `inspect`, which used to share it, has been retired in
+favour of `cli` (platform-contract §7), whose read-only guarantee instead comes from the pack's
+verb/flag/sensitive-type allow-list, not this sanitizer:
+
+- `metadata.managedFields` is dropped from every object.
+- The `kubectl.kubernetes.io/last-applied-configuration` annotation is dropped -- for a Secret it
+  would otherwise carry the data.
+- **Secret:** only metadata, `type`, and the **key names** survive (`secretKeys`). `data` and
+  `stringData` are removed entirely -- never partially masked, never present. Annotation *values*
+  are replaced with a marker unless the key has one of a short allowlist of safe-by-convention
+  prefixes (`kubernetes.io/`, `cert-manager.io/`, `meta.helm.sh/`, `app.kubernetes.io/`,
+  `helm.sh/`) -- keys always survive. This closes a real side door: kapp's `kapp.k14s.io/original`
+  and similar "last full manifest" conventions can carry the *whole* Secret, base64 `data` included,
+  as one annotation value, and a short base64 value embedded in a large JSON blob is far below the
+  generic credential masker's high-entropy length floor.
+- **ConfigMap:** values are stored in full by default (`configMapValues: store`) -- they're needed
+  for configuration questions and for dependency rules (hosts, URLs and service names inside
+  config are where most real dependencies live). `binaryData` is always reduced to size (+ hash,
+  see below). Every key also gets an entry in `dataHashes`, computed before masking, so "this
+  value changed" and "these ConfigMaps share a value" survive display-time masking -- **for values
+  that weren't masked**: a value masked by its key name or a credential shape found inside it
+  stores only its `size`, never a `sha256` of what it actually held (a hash is still a commitment
+  to the exact value). `configMapValues: keysOnly` drops the values entirely (for a hosted,
+  multi-tenant install) and is stricter still: every hash is `size` only, masked or not.
+- **Credential masking keeps structure**, for ConfigMap values and container `env[].value` alike:
+  - lines shaped like `key=value`, `key: value`, `key = value` or `"key": "value"` inside an
+    otherwise-opaque string (a ConfigMap value that is itself a small `.env`/properties/JSON-ish
+    blob) have their value masked when the key's last dotted/underscored segment names a
+    credential -- catching an ordinary, non-high-entropy password (`DB_PASSWORD=hunter2`) that no
+    other rule below would catch, while leaving every other line, including a URL or host, alone;
+  - a DSN/URL's userinfo password is masked, keeping scheme, host, port and database
+    (`postgres://app:****@orders-db.svc:5432/orders`);
+  - PEM blocks, JWTs, and recognizable cloud access-key formats (AWS access key IDs, GitHub
+    tokens, Slack tokens) are masked wherever they appear in a string;
+  - a generic high-entropy-token heuristic catches other long, mixed-case/punctuated secrets --
+    deliberately excluding strings of only lowercase letters, digits and `-` (Kubernetes names,
+    UIDs, git SHAs, image digests), which are the references dependency rules join on;
+  - a **narrow** set of key/variable names (`password`, `passwd`, `secret`, `token`, `apikey`,
+    `api_key`, `private_key`, `credentials`, matched against the key with separators stripped, so
+    `DB_PASSWORD` and `API_TOKEN` match) triggers whole-value masking regardless of content.
+    Broad words like `key`, `auth`, `conn`, `dsn` are deliberately **not** in this list -- they
+    name hosts and connection strings far more often than bare secrets. Keys that name an object
+    (`secretName`, `*Ref`, `*Namespace`) are exempt: their value is a reference. The same rule
+    applies to the `value` of any `{name, value}` pair (Argo CD helm parameters, Tekton params).
+  - `env[].valueFrom` is left completely untouched -- it's a reference, not a value, and
+    references are what dependency rules are built from.
+- `status` is split off from the document but goes through the same masking and truncation;
+  so do Secret and ConfigMap metadata.
+- Every other string over 16 KB (annotations, args, arbitrary CRD fields) is truncated with a
+  `***TRUNCATED:size=N:sha256=...***` marker. ConfigMap `data` values are the one exception --
+  never truncated, since Kubernetes already caps a whole object at 1 MiB.
+
+`discover`'s bulk push is this sanitizer's only caller now, so there is no other code path into it
+to drift out of step with.
+
+## The Kubernetes pack
+
+`packs/kubernetes/pack.yaml` carries the platform's **static** facet definitions and dependency
+rules (platform-contract §2) -- the part that is identical for every cluster this pack is registered
+against -- **not** its type specs, which are generated live from `rwdiscovery/chain.py`'s builtin
+table (`rwdiscovery/packbuild.py`), so there is exactly one place that knows the Kubernetes builtin
+type table. `tests/test_pack_yaml.py` compiles every JMESPath expression and checks every
+strategy/edgeType against the closed vocabulary platform-contract §2 defines.
+
+Whatever a given cluster's own discovery turns up -- CustomResourceDefinitions, aggregated APIs
+(`apiregistration.k8s.io/APIService`, metrics adapters, ...), and any other listable resource not
+already covered -- is registered separately, as the pack PUT's **additive** part: `additiveTypes`
+for the type specs, `additiveFacetDefinitions` for the `k8sSummary` facet's per-CRD
+`expressionByType` entries (built from each CRD's `additionalPrinterColumns`). The digest that
+makes registration idempotent covers only the static part, so two clusters with different CRDs
+installed never fight over the pack's digest; papi upserts additive entries independently and never
+removes one because a different cluster's registration didn't mention it. An additive type that
+conflicts with an existing registration (a different parent or plural) comes back in the response's
+`skipped` list -- `rwdiscovery/sync.py` logs it and moves on rather than failing the whole
+registration; any item of that type is still rejected once pushed, failing only its own partition
+(`rwdiscovery/sync.py`'s existing rejected-item handling).
+
+The pack also carries an `access` block: `typeRead` (how this platform expresses "read type T" in
+its own native permission terms), a handful of named `permissions` that aren't a type read (reading
+the API server's own version), and `featureGroups` bundling related types/facets/dependency rules
+into the human-sized capabilities (workload health, service routing, RBAC, storage, ...) a customer
+sees on the platform's per-cluster Access view -- see `docs/platform-contract.md` §2 for the full
+shape and validation rules.
+
+## Local development
+
+A capability author needs no cluster to develop against the SDK. `rwtask run` (from
+`runwhen_capability`, this repo's SDK dependency) is the reference implementation: the same code
+path the task host runs in production, against the local filesystem.
+
+```
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+### Exercising `cli` against a real cluster, read-only
+
+`cli` needs only the `kubeconfig` credential (it never calls `ctx.credential("resourceSync")`), so
+it can be smoke-tested against any cluster your own kubeconfig can already reach, without a papi
+endpoint:
+
+```
+cat > /tmp/credentials.json <<JSON
+{"kubeconfig": "$(cat ~/.kube/config | sed 's/"/\\"/g')"}
+JSON
+
+cat > /tmp/request.json <<'JSON'
+{
+  "version": 1,
+  "setup": {"task": "connect", "inputs": {}},
+  "tasks": [
+    {"task": "cli", "inputs": {
+      "clusterName": "dev", "argv": ["get", "namespace", "kube-system"]
+    }}
+  ]
+}
+JSON
+
+rwtask run capabilities/k8s-discovery --request /tmp/request.json --credentials /tmp/credentials.json
+```
+
+Prints the `ResultEnvelope` (setup + task status/outputs/error) as JSON. This is read-only: no
+kubeconfig content, and nothing read from the cluster, should ever be committed to this repo --
+only hand-written synthetic fixtures belong in `tests/fixtures/` and `packs/kubernetes/vectors/`.
+
+`discover` additionally needs the `resourceSync` credential (a real papi endpoint + lease-scoped
+token) to do anything beyond registering the pack, so exercising it end to end locally means
+pointing it at a real (likely local/dev) papi. The fake-cluster, fake-papi end-to-end test
+(`tests/test_discover_e2e.py`) is the fast, offline way to exercise the whole `discover` flow --
+run it as part of `make test`.
+
+### Running the image directly
+
+```
+docker build -f Dockerfile.k8s-discovery -t k8s-discovery:dev .
+docker run --rm k8s-discovery:dev rwtask --help
+```
+
+In production the image is never driven directly: `rwtask serve --relay <url> --pool <poolId>`
+long-polls the runner as a warm executor, executing one request (`connect` + `discover` or `cli`)
+at a time and posting the result back. The image's `CMD` already bakes in its own
+`--capability-dir` so it never has to guess which capability it is serving.
+
+## Releases
+
+`manifest.yaml` declares no `image:` key -- an image cannot know its own digest. Instead, the
+pushed image itself carries its own manifest as an OCI label,
+`com.runwhen.capability.manifest.v1`: the base64 (no line breaks) of `manifest.yaml`, verbatim.
+`scripts/manifest_label.py` computes it at build time; `Dockerfile.k8s-discovery` bakes it in via
+the `MANIFEST_B64` build arg. The codecollection catalog reads this label straight off the pushed
+image's config blob to discover the capability, its id, and its declared version -- never a
+separate build artifact, and never a platform release. Mirrors the same convention
+rw-checks-codecollection established (`docs/platform-contract.md` and that repo's own
+`manifest.yaml` header comment cite the same contract).
+
+The same image also carries the JSON Schema documents its task outputs reference (`discover`'s
+and `cli`'s `outputs.<name>.schema`, e.g. `./schemas/cli_result.v1.json`), as a second OCI
+label, `com.runwhen.capability.schemas.v1`: base64 of one compact JSON object keyed by each
+schema's manifest-relative path, values the schemas themselves. `scripts/manifest_label.py`
+computes it from the same `manifest.yaml`, and fails the build if a referenced schema file is
+missing, isn't valid JSON, or isn't a JSON object. The codecollection catalog reads it the same
+way it reads the manifest label, so a schema change ships with the image, never a separate
+platform release.
+
+**Schema files are versioned and immutable.** Every file in a capability's `schemas/` directory is
+named `<name>.v<N>.json` (`N` >= 1) -- `manifest.yaml`'s `schema:` refs point at a specific
+version. Once committed, a schema file never changes and is never deleted: a model's shape change
+publishes a new `.v<N+1>.json` file instead, and the manifest moves to it -- the old file, and
+whatever already resolved a run's output against it, keeps working. CI
+(`scripts/check_schema_immutability.py`) enforces both the naming rule and the immutability rule
+on every push and pull request, comparing the working tree's `schemas/*.v<N>.json` files against
+the base branch/commit. **The image label carries every version in `schemas/`**, not only the
+ones the current manifest references, so a capability's whole schema history ships with each
+image and an older run's result stays resolvable -- `schemas/k8s_object.v1.json` is exactly this
+case: `inspect`, the task that used to produce it, has been retired in favour of `cli`, but the
+file stays published (and in the label) rather than being deleted. A schema change that platform
+consumers must
+handle differently should also bump the output's `kind` (e.g. `rw.discovery_summary.v1` ->
+`rw.discovery_summary.v2`) -- this is a convention for capability authors; nothing enforces it
+mechanically.
+
+To inspect the label on a published image without pulling it:
+
+```
+# crane -- resolves the index to the current platform's image config
+crane config --platform linux/amd64 <ref> | jq -r '.config.Labels["com.runwhen.capability.manifest.v1"]' | base64 -d
+
+# docker buildx -- .Image is keyed by platform for a multi-arch index
+docker buildx imagetools inspect <ref> --format '{{ json (index .Image "linux/amd64") }}' \
+  | jq -r '.config.Labels["com.runwhen.capability.manifest.v1"]' | base64 -d
+```
+
+**Tags.** A push to any branch publishes `<sanitized-ref>-<sha7>` (the catalog's canonical,
+immutable tag for that build) plus a moving `<sanitized-ref>` alias, and `latest` when the branch
+is `main`. A pull request publishes `pr-<n>`. Pushing a semver tag (`v1.2.3`, matching
+`.github/workflows/build-push.yaml`'s `v[0-9]+.[0-9]+.[0-9]+*` trigger) instead publishes a
+**release**: the canonical tag is the tag itself, with no `-<sha7>` suffix and no alias -- no
+`latest`, no branch pointer. The codecollection catalog's `stable` channel resolves to the highest
+semver tag published this way; until one exists, `stable` has nothing to resolve to.
+
+## Tests
+
+```
+make test        # python -m pytest -q
+make lint         # ruff check .
+make fmt-check    # ruff format --check .
+make schemas      # regenerate capabilities/k8s-discovery/schemas/*.json from rwdiscovery.models
+make vectors      # pack.yaml JMESPath validation + chain vectors, in isolation
+```
+
+All tests are offline, against hand-written synthetic fixtures (`acme-*` names) and an in-process
+fake Kubernetes API (`tests/fakes.py`) -- never a real cluster. `tests/test_discover_e2e.py` is the
+broadest one: a small synthetic cluster (Deployment/ReplicaSet/Pods, Service/EndpointSlice,
+ConfigMap/Secret, CronJob/Job) discovered against a fake papi (`responses`), asserting push order,
+batch sequencing, sanitization, rollups, and commit partitions end to end.
+
+## SDK dependency
+
+This repo depends on `runwhen_capability` from `rw-checks-codecollection`, pinned by commit SHA
+(`pyproject.toml`) -- the VCS equivalent of a hash pin (pip's `--require-hashes` mode does not
+support VCS requirements at all, so this one dependency installs in its own, non-hash-checked step
+in `Dockerfile.k8s-discovery`; see that file's header comment). No packaging or SDK changes were
+needed upstream: `rw-checks-codecollection`'s own `pyproject.toml` lives at its repo root and
+packages only `sdk/`, so a plain git dependency resolves to the `runwhen_capability` package alone.

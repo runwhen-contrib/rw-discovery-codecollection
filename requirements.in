@@ -1,0 +1,15 @@
+# The two runtime dependencies this capability talks to the cluster and
+# evaluates expressions through directly (kubernetes client, jmespath),
+# hash-pinned rather than left to the general dependency tree.
+# requirements.txt is GENERATED from this file by scripts/gen_pip_hashes.sh
+# (uv pip compile --generate-hashes), run
+# inside the image's own base (linux/amd64 python:3.12-slim) so the
+# resolution matches what the image will actually install.
+#
+# runwhen-capability (the SDK) and its own deps (pydantic, PyYAML, requests)
+# are installed separately, unpinned by hash, the same way
+# rw-checks-codecollection installs its SDK layer (`pip install /app`) --
+# only the two dependencies below get the stricter treatment, mirroring how
+# rw-checks-codecollection hash-pins the *tools* it runs, not the SDK.
+kubernetes>=30,<31
+jmespath>=1.0,<2

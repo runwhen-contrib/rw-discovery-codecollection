@@ -147,25 +147,29 @@ ENV RWDISCOVERY_PACK_PATH=/app/packs/kubernetes/pack.yaml
 # --- OCI image annotations (opencontainers.org/image-spec) -------------------
 # Standard keys registries and scanners read. REVISION/CREATED are build
 # args because they are the only two values that cannot be known from the
-# source tree alone; CI passes them. CAPABILITY/CAPABILITY_VERSION/
-# MANIFEST_B64 come from scripts/manifest_label.py, so these labels can
-# never drift from the manifest they describe -- the final digest-pinned
-# `image:` field is a separate, later step (CI resolves it after this image
-# is pushed; see .github/workflows/build-push.yaml).
+# source tree alone; CI passes them.
+#
+# CAPABILITY_MANIFEST_B64 is the base64 of
+# capabilities/k8s-discovery/manifest.yaml (`rwtask label
+# capabilities/k8s-discovery`); CAPABILITY_SCHEMAS_B64 is the base64 of a
+# JSON object holding every file under its schemas/, keyed
+# "schemas/<filename>" (`rwtask label --schemas ...`). CI computes both at
+# build time, so these labels can never drift from the files they
+# describe, and the catalog reads the capability straight off the pushed
+# image.
 ARG REVISION=unknown
 ARG CREATED=unknown
-ARG CAPABILITY=k8s-discovery
-ARG CAPABILITY_VERSION=unknown
-ARG MANIFEST_B64=
+ARG CAPABILITY_MANIFEST_B64=""
+ARG CAPABILITY_SCHEMAS_B64=""
 LABEL org.opencontainers.image.title="k8s-discovery" \
       org.opencontainers.image.description="Kubernetes cluster discovery capability for the RunWhen platform" \
       org.opencontainers.image.source="https://github.com/runwhen-contrib/rw-discovery-codecollection" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.created="${CREATED}" \
-      io.runwhen.capability="${CAPABILITY}" \
-      io.runwhen.capability.version="${CAPABILITY_VERSION}" \
-      io.runwhen.capability.manifest="${MANIFEST_B64}"
+      io.runwhen.capability="k8s-discovery" \
+      com.runwhen.capability.manifest.v1="${CAPABILITY_MANIFEST_B64}" \
+      com.runwhen.capability.schemas.v1="${CAPABILITY_SCHEMAS_B64}"
 
 # Non-root. /work is rwtask serve's default --workdir -- every request's
 # scope directory (<workdir>/<scopeId>/) is created and wiped under it,

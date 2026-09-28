@@ -40,8 +40,8 @@ name: Build And Push
 #   merge          -- pulls the per-platform digests and uses `docker
 #                     buildx imagetools create` to stitch them into a
 #                     single multi-arch manifest under every tag prepare
-#                     computed, then renders manifest.yaml with the
-#                     resolved digest and uploads it as a build artifact.
+#                     computed. The manifest rides each image as the
+#                     com.runwhen.capability.manifest.v1 label.
 #
 # `test` runs independently and gates `build`: rwdiscovery's own
 # pytest/ruff suite is cheap and fast, and a broken task host should never
@@ -112,7 +112,7 @@ jobs:
         run: python3 -m pip install --quiet -e ".[dev]"
 
       - name: Verify checked-in schemas match the models
-        run: python3 scripts/export_schemas.py && git diff --exit-code capabilities/k8s-discovery/schemas
+        run: rwtask schemas --check
 
       - name: pytest
         run: python3 -m pytest -q
@@ -233,7 +233,7 @@ jobs:
           import yaml
 
           REQUIRED_KEYS = {
-              "apiVersion", "capability", "version", "description", "image",
+              "apiVersion", "capability", "version", "description",
               "execution", "appliesTo", "needs", "setup", "tasks", "retention",
           }
 
@@ -243,6 +243,8 @@ jobs:
           missing = REQUIRED_KEYS - manifest.keys()
           if missing:
               sys.exit(f"manifest.yaml: missing required keys: {sorted(missing)}")
+          if "image" in manifest:
+              sys.exit("manifest.yaml: must not have an 'image' key -- an image cannot know its own digest")
           if manifest["capability"] != "k8s-discovery":
               sys.exit(f"manifest.yaml: 'capability' must be 'k8s-discovery', got {manifest['capability']!r}")
           if manifest["execution"].get("mode") != "stateless":
@@ -293,8 +295,10 @@ jobs:
       - name: Compute manifest label build-args
         id: labels
         run: |
-          python3 -m pip install --quiet pyyaml
-          python3 scripts/manifest_label.py >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          python3 -m pip install --quiet .
+          echo "manifest_b64=$(rwtask label capabilities/k8s-discovery)" >> "$GITHUB_OUTPUT"
+          echo "schemas_b64=$(rwtask label --schemas capabilities/k8s-discovery)" >> "$GITHUB_OUTPUT"
 
       # ----------------------------------------------------------------
       # Phase 1: build natively + load locally so we can exec the smoke
@@ -312,9 +316,8 @@ jobs:
           build-args: |
             REVISION=${{ github.sha }}
             CREATED=${{ github.event.repository.updated_at }}
-            CAPABILITY=${{ steps.labels.outputs.capability }}
-            CAPABILITY_VERSION=${{ steps.labels.outputs.capability_version }}
-            MANIFEST_B64=${{ steps.labels.outputs.manifest_b64 }}
+            CAPABILITY_MANIFEST_B64=${{ steps.labels.outputs.manifest_b64 }}
+            CAPABILITY_SCHEMAS_B64=${{ steps.labels.outputs.schemas_b64 }}
           cache-from: type=gha,scope=${{ env.IMAGE_NAME }}-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ env.IMAGE_NAME }}-${{ matrix.arch }}
 
@@ -380,9 +383,8 @@ jobs:
           build-args: |
             REVISION=${{ github.sha }}
             CREATED=${{ github.event.repository.updated_at }}
-            CAPABILITY=${{ steps.labels.outputs.capability }}
-            CAPABILITY_VERSION=${{ steps.labels.outputs.capability_version }}
-            MANIFEST_B64=${{ steps.labels.outputs.manifest_b64 }}
+            CAPABILITY_MANIFEST_B64=${{ steps.labels.outputs.manifest_b64 }}
+            CAPABILITY_SCHEMAS_B64=${{ steps.labels.outputs.schemas_b64 }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -483,36 +485,6 @@ jobs:
             exit 1
           fi
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
-
-      # Per the RunWhen capability manifest format: the shipped image is
-      # digest-pinned, injected at publish time -- a tag is not a version.
-      # This does not commit back to the repo -- it publishes the resolved
-      # manifest as a build artifact for the platform's catalog
-      # registration step to pick up.
-      - name: Render capability manifest with the resolved digest
-        env:
-          REPO_LC: ${{ env.REGISTRY }}/${{ needs.prepare.outputs.owner_lc }}/${{ env.IMAGE_NAME }}
-          DIGEST: ${{ steps.inspect.outputs.digest }}
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/manifest
-          sed -E "s|^image: .*|image: ${REPO_LC}@${DIGEST}|" \
-            capabilities/k8s-discovery/manifest.yaml > /tmp/manifest/manifest.yaml
-          python3 -m pip install --quiet pyyaml
-          python3 - <<'PY'
-          import yaml
-          with open("/tmp/manifest/manifest.yaml") as f:
-              m = yaml.safe_load(f)
-          assert "INJECTED_BY_CI" not in m["image"], f"digest was not injected: {m['image']!r}"
-          print(f"rendered manifest image: {m['image']}")
-          PY
-
-      - name: Upload rendered manifest
-        uses: actions/upload-artifact@v4
-        with:
-          name: capability-manifest-k8s-discovery
-          path: /tmp/manifest/manifest.yaml
-          retention-days: 30
 
       - name: Summary
         env:

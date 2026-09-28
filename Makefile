@@ -4,7 +4,7 @@ install:
 	python3 -m pip install -e ".[dev]"
 
 schemas:
-	python3 scripts/export_schemas.py
+	rwtask schemas
 
 test:
 	python3 -m pytest -q

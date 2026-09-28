@@ -48,3 +48,11 @@ extend-exclude = ["tests/fixtures"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+
+# Output schemas, exported from rwdiscovery's models by `rwtask schemas`
+# (`make schemas`); CI runs `rwtask schemas --check`. One entry per
+# `tasks[].outputs.<name>.schema` the manifest declares.
+[tool.rwtask.schemas."capabilities/k8s-discovery"]
+"discovery_summary.json" = "rwdiscovery.models:DiscoverySummary"
+"k8s_object.json" = "rwdiscovery.models:K8sObjectResult"
+"cli_result.json" = "rwdiscovery.models:CliResult"

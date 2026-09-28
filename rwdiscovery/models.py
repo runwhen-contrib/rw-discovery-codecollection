@@ -1,5 +1,5 @@
 """Pydantic models for the capability's typed outputs (platform-contract
-§5). Schema is exported, not hand-written -- `scripts/export_schemas.py`
+§5). Schema is exported, not hand-written -- `rwtask schemas`
 generates `capabilities/k8s-discovery/schemas/*.json` from these at build
 time, the same convention `rw-checks-codecollection` uses for its own
 `rw.findings.v1`."""

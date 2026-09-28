@@ -307,7 +307,7 @@ long-polls the runner as a warm executor, executing one request (`connect` + `di
 make test        # python -m pytest -q
 make lint         # ruff check .
 make fmt-check    # ruff format --check .
-make schemas      # regenerate capabilities/k8s-discovery/schemas/*.json from rwdiscovery.models
+make schemas      # rwtask schemas: regenerate capabilities/k8s-discovery/schemas/*.json from rwdiscovery.models
 make vectors      # pack.yaml JMESPath validation + chain vectors, in isolation
 ```
 

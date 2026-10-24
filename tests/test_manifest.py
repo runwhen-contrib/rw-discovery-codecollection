@@ -92,6 +92,8 @@ def test_manifest_declares_readonly_flags_per_capability_contract():
     by_name = {t["name"]: t for t in manifest["tasks"]}
     assert by_name["discover"]["readOnly"] is False
     assert by_name["cli"]["readOnly"] is True
+    assert by_name["export"]["readOnly"] is True
+    assert by_name["logs"]["readOnly"] is True
 
 
 def test_manifest_invocation_defaults_to_queued_except_cli():
@@ -103,13 +105,47 @@ def test_manifest_invocation_defaults_to_queued_except_cli():
     by_name = {t["name"]: t for t in manifest["tasks"]}
     assert by_name["cli"]["invocation"] == ["sync"]
     assert "invocation" not in by_name["discover"]
+    assert "invocation" not in by_name["export"]
+    assert "invocation" not in by_name["logs"]
 
 
 def test_capability_loads_and_registers_setup_and_tasks():
     loaded = load_capability(CAPABILITY_DIR)
     assert loaded.capability_id == "k8s-discovery"
     assert "connect" in loaded.registry.setups
-    assert {"discover", "cli"} <= loaded.registry.tasks.keys()
+    assert {"discover", "cli", "export", "logs"} <= loaded.registry.tasks.keys()
+
+
+def test_manifest_declares_the_export_and_logs_tasks_that_write_artifacts():
+    """`dump` is an artifact (no schema: the platform stores the bytes), `summary` a small typed result."""
+    manifest = load_manifest(CAPABILITY_DIR)
+    by_name = {t["name"]: t for t in manifest["tasks"]}
+
+    export = by_name["export"]
+    assert export["inputs"] == {
+        "clusterName": {"from": "request"},
+        "resources": {"from": "request", "optional": True},
+        "namespace": {"from": "request", "optional": True},
+        "selector": {"from": "request", "optional": True},
+    }
+    assert export["outputs"] == {
+        "dump": {"kind": "artifact", "contentType": "application/json", "maxSize": "5Gi"},
+        "summary": {"kind": "rw.k8s_export_summary.v1", "schema": "./schemas/k8s_export_summary.v1.json"},
+    }
+
+    logs = by_name["logs"]
+    assert logs["inputs"] == {
+        "clusterName": {"from": "request"},
+        "namespace": {"from": "request"},
+        "selector": {"from": "request", "optional": True},
+        "workload": {"from": "request", "optional": True},
+        "since": {"from": "request", "optional": True},
+        "container": {"from": "request", "optional": True},
+    }
+    assert logs["outputs"] == {
+        "dump": {"kind": "artifact", "contentType": "text/plain", "maxSize": "5Gi"},
+        "summary": {"kind": "rw.k8s_logs_summary.v1", "schema": "./schemas/k8s_logs_summary.v1.json"},
+    }
 
 
 # The platform's executor host calls each function as `func(ctx, **inputs)`
@@ -213,17 +249,13 @@ def test_dockerfile_schemas_label_key_matches_the_catalog_reader():
 def test_manifest_label_script_reports_the_real_manifests_output_schemas():
     outputs = _run_manifest_label_script()
     decoded = json.loads(base64.b64decode(outputs["schemas_b64"]))
-    assert decoded.keys() == {
-        "schemas/discovery_summary.v1.json",
-        "schemas/k8s_object.v1.json",
-        "schemas/cli_result.v1.json",
-    }
-    assert decoded["schemas/discovery_summary.v1.json"] == json.loads(
-        (CAPABILITY_DIR / "schemas" / "discovery_summary.v1.json").read_text()
-    )
-    assert decoded["schemas/k8s_object.v1.json"] == json.loads(
-        (CAPABILITY_DIR / "schemas" / "k8s_object.v1.json").read_text()
-    )
-    assert decoded["schemas/cli_result.v1.json"] == json.loads(
-        (CAPABILITY_DIR / "schemas" / "cli_result.v1.json").read_text()
-    )
+    filenames = [
+        "discovery_summary.v1.json",
+        "k8s_object.v1.json",
+        "cli_result.v1.json",
+        "k8s_export_summary.v1.json",
+        "k8s_logs_summary.v1.json",
+    ]
+    assert decoded.keys() == {f"schemas/{filename}" for filename in filenames}
+    for filename in filenames:
+        assert decoded[f"schemas/{filename}"] == json.loads((CAPABILITY_DIR / "schemas" / filename).read_text())

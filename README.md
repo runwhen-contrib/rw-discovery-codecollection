@@ -19,7 +19,7 @@ sanitized `get`/`describe` over the Kubernetes API) has been retired in its favo
   Kubernetes identity/chain rules, rollups over ephemeral objects, the pack builder, and the sync
   protocol client.
 - **`capabilities/k8s-discovery/`** -- the capability: a manifest (`manifest.yaml`), its tasks
-  (`tasks.py`: `connect` setup, `discover` and `cli` tasks), and the JSON Schema exported from
+  (`tasks.py`: `connect` setup, `discover`, `cli`, `export` and `logs` tasks), and the JSON Schema exported from
   `rwdiscovery`'s models (`schemas/`).
 - **`packs/kubernetes/pack.yaml`** -- the Kubernetes pack: facet definitions and dependency rules
   registered with papi at the start of every `discover` run. Builtin type specs come from
@@ -111,6 +111,44 @@ validation and execution contract, including the `--grep`/`--tail`/`--limit-byte
 
 `cli` takes no `context` input of its own -- it always runs against the `kubeconfig` credential's
 current-context, same as a bare `kubectl` would.
+
+### What `export` and `logs` do
+
+`cli` keeps its output small and capped. Its two queued, read-only siblings run the same `kubectl`
+the same way (no shell, a scrubbed environment, a 0600 kubeconfig that is deleted afterwards) but
+stream the **whole** output into a `dump` artifact instead, and return a small `summary` beside it:
+`{returncode, bytes, stderrTail}` (`rw.k8s_export_summary.v1` / `rw.k8s_logs_summary.v1`). A non-zero
+`kubectl` exit does not fail the task: the dump keeps whatever `kubectl` wrote, and the summary
+carries the exit code and the last 4 KiB of the captured stderr (the SDK keeps the first 1 MiB). Both are bounded by the request's deadline, not
+by `kubectl`'s own `--request-timeout`, and both check the `kubectl` they build against the same
+`cli` allow-list.
+
+- **`export`** -- `kubectl get <resources> (--namespace=<ns> | --all-namespaces) --output=json
+  [--selector=<sel>]`. **Secrets are never exported:** `secret`, `secrets`, `secrets/<name>` and
+  `secrets.<group>` are refused, anywhere in the list. The dump streams through the task, but
+  `kubectl get -o json` builds the whole list in its own memory before printing it, so a very large
+  export can exceed the pod's memory limit: scope large exports by namespace, selector or resource
+  type.
+- **`logs`** -- `kubectl logs --namespace=<ns> (--selector=<sel> | <workload>) (--all-containers |
+  --container=<c>) --prefix --timestamps --since=<since> --tail=-1 --max-log-requests=20
+  --ignore-errors`. `--tail=-1` is spelled out because `kubectl` otherwise shows only the last 10
+  lines per container once a selector is given. `logs <workload>` follows `kubectl`'s own rule of
+  reading **one** pod of the workload; use a `selector` to read every pod.
+
+| input | task | type | required | notes |
+|---|---|---|---|---|
+| `clusterName` | both | string | yes | |
+| `resources` | `export` | string | no (default `all`) | Comma-separated resource types, e.g. `pods,deployments.apps`. |
+| `namespace` | `export` | string | no | Omitted: all namespaces. |
+| `namespace` | `logs` | string | yes | |
+| `selector` | both | string | `export`: no; `logs`: one of `selector`/`workload` | A label selector. |
+| `workload` | `logs` | string | one of `selector`/`workload` | e.g. `deployment/web` or a pod name. |
+| `since` | `logs` | string | no (default `6h`) | A duration such as `90s`, `2h` or `1h30m`. |
+| `container` | `logs` | string | no (default: all containers) | |
+
+Request values only ever reach `kubectl` inside `--flag=value` tokens, or as the one `resources`/
+`workload` positional, which must start with a letter or digit and use only letters, digits, `.`,
+`-`, `/` (and `,` for `resources`); `namespace` and `container` must be DNS labels.
 
 ## Credentials
 

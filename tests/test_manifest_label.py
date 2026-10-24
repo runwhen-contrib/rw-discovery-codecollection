@@ -37,24 +37,23 @@ def _manifest(schema_ref: str | None) -> dict:
 # ---------------------------------------------------------------------------
 # the real, checked-in manifest
 # ---------------------------------------------------------------------------
-def test_real_manifest_schemas_label_has_exactly_the_three_published_schemas():
-    # Today schemas/ holds exactly the three versions the manifest references (v1 of each) --
+def test_real_manifest_schemas_label_has_exactly_the_five_published_schemas():
+    # Today schemas/ holds exactly the five versions the manifest references (v1 of each) --
     # once a schema is versioned past v1, this label grows to carry the older version too; see
     # test_schemas_map_includes_every_file_in_schemas_dir_not_only_referenced below.
     outputs = compute_outputs()
     decoded = json.loads(base64.b64decode(outputs["schemas_b64"]))
-    assert decoded.keys() == {
-        "schemas/discovery_summary.v1.json",
-        "schemas/k8s_object.v1.json",
-        "schemas/cli_result.v1.json",
-    }
-    for filename, key in (
-        ("discovery_summary.v1.json", "schemas/discovery_summary.v1.json"),
-        ("k8s_object.v1.json", "schemas/k8s_object.v1.json"),
-        ("cli_result.v1.json", "schemas/cli_result.v1.json"),
-    ):
+    filenames = [
+        "discovery_summary.v1.json",
+        "k8s_object.v1.json",
+        "cli_result.v1.json",
+        "k8s_export_summary.v1.json",
+        "k8s_logs_summary.v1.json",
+    ]
+    assert decoded.keys() == {f"schemas/{filename}" for filename in filenames}
+    for filename in filenames:
         expected = json.loads((CAPABILITY_DIR / "schemas" / filename).read_text())
-        assert decoded[key] == expected
+        assert decoded[f"schemas/{filename}"] == expected
 
 
 def test_real_manifest_schemas_label_is_deterministic():

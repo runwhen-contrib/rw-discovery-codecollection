@@ -27,19 +27,18 @@ Two halves:
 
 from __future__ import annotations
 
-import os
 import re
 import shlex
 import shutil
 import string
 import subprocess
-import tempfile
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import packbuild
+from .kubectl_artifact import kubeconfig_file, scrubbed_env
 
 # Step 2: a token that is exactly one of these, starts with one of the
 # prefixes, or ends with the suffix is shell syntax, not a kubectl argument.
@@ -318,11 +317,29 @@ def _check_sensitive(positionals: list[str], *, output: str | None, cli_block: d
         return
     sensitive = {t.lower() for t in cli_block.get("sensitiveTypes") or []}
     for part in positionals[0].split(","):
-        resource_type = part.split("/", 1)[0].lower().split(".", 1)[0]
-        if resource_type in sensitive:
+        kind = resource_type(part)
+        if kind in sensitive:
             allowed = ["the default table", *(f"-o {o}" for o in sensitive_outputs)]
             shown = f"{', '.join(allowed[:-1])} or {allowed[-1]}" if len(allowed) > 1 else allowed[0]
-            raise _Rejected("sensitive-type", f"{resource_type} is sensitive: only {shown} are allowed")
+            raise _Rejected("sensitive-type", f"{kind} is sensitive: only {shown} are allowed")
+
+
+def resource_type(part: str) -> str:
+    """One comma-separated part of a `get` positional as a bare, lower-cased
+    resource type: `/name` and `.group` stripped, so `Secret`, `secret/s1` and
+    `secrets.v1` resolve to `secret`/`secrets`."""
+    return part.split("/", 1)[0].lower().split(".", 1)[0]
+
+
+def require_allowed(argv: list[str], cli_block: dict | None = None) -> None:
+    """Raises `ValueError(f"{reason}: {hint}")` unless `argv` (no leading
+    `kubectl`) passes `validate()`. For callers that build their own argv
+    and exec it themselves, rather than the normalised one `validate()`
+    returns -- the `export` and `logs` tasks."""
+    cli_block = cli_block if cli_block is not None else packbuild.load_pack_yaml()["cli"]
+    validation = validate(argv, cli_block)
+    if not validation.ok:
+        raise ValueError(f"{validation.rejection.reason}: {validation.rejection.hint}")
 
 
 def _apply_logs_defaults(flags: list[_Flag], *, limit: int) -> list[str]:
@@ -420,19 +437,8 @@ def run_cli(
 
     effective_timeout = resolve_timeout_seconds(timeout_seconds, cli_block["output"])
 
-    workdir = Path(workdir)
-    workdir.mkdir(parents=True, exist_ok=True)
-    fd, kubeconfig_path = tempfile.mkstemp(dir=workdir, prefix=".kubeconfig-", suffix=".yaml")
-    os.chmod(kubeconfig_path, 0o600)
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(kubeconfig_yaml)
-
-        env = {
-            "PATH": os.environ.get("PATH", ""),
-            "HOME": os.environ.get("HOME", ""),
-            "KUBECONFIG": kubeconfig_path,
-        }
+    with kubeconfig_file(kubeconfig_yaml, workdir) as kubeconfig_path:
+        env = scrubbed_env(kubeconfig_path)
         resolved_kubectl = shutil.which(kubectl_path, path=env["PATH"]) or kubectl_path
         cmd = [
             resolved_kubectl,
@@ -481,8 +487,3 @@ def run_cli(
             "durationMs": int((time.monotonic() - start) * 1000),
             "rejected": None,
         }
-    finally:
-        try:
-            os.unlink(kubeconfig_path)
-        except OSError:
-            pass

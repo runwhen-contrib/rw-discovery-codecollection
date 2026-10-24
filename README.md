@@ -100,6 +100,16 @@ re-validates and executes every request; papi's own copy of the same rules exist
 helpful errors, since this capability's is authoritative. See platform-contract §7 for the full
 validation and execution contract, including the `--grep`/`--tail`/`--limit-bytes` handling.
 
+A result is capped at `maxBytes` and says so with `truncated`. For a truncated `get` or `logs`, the
+result's `fullOutput` (new in `rw.cli_result.v2`) names the queued task that returns all of it and
+the inputs to pass: `{"task": "export", "inputs": {"clusterName": "c1", "resources": "pods",
+"namespace": "web"}}`, or `{"task": "logs", "inputs": {...}}` (see the next section). It covers
+everything the command selected and may cover more (a `get` of named objects exports every object
+of those types, as JSON), and it is not `--grep`-filtered. It is `null` when the result is not
+truncated, the command was rejected, the verb is neither `get` nor `logs`, or no queued task can
+represent the command: no `--namespace`/`--all-namespaces`, `logs --previous` or `--since-time`,
+Secrets. `cli_result.v1.json` stays published for results already produced against it.
+
 ### Inputs (`cli`)
 
 | input | type | required | notes |
@@ -365,7 +375,7 @@ rw-checks-codecollection established (`docs/platform-contract.md` and that repo'
 `manifest.yaml` header comment cite the same contract).
 
 The same image also carries the JSON Schema documents its task outputs reference (`discover`'s
-and `cli`'s `outputs.<name>.schema`, e.g. `./schemas/cli_result.v1.json`), as a second OCI
+and `cli`'s `outputs.<name>.schema`, e.g. `./schemas/cli_result.v2.json`), as a second OCI
 label, `com.runwhen.capability.schemas.v1`: base64 of one compact JSON object keyed by each
 schema's manifest-relative path, values the schemas themselves. `scripts/manifest_label.py`
 computes it from the same `manifest.yaml`, and fails the build if a referenced schema file is

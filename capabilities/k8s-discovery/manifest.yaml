@@ -87,8 +87,8 @@ tasks:
       timeoutSeconds: { from: request, optional: true }
     outputs:
       result:
-        kind: rw.cli_result.v1
-        schema: ./schemas/cli_result.v1.json
+        kind: rw.cli_result.v2
+        schema: ./schemas/cli_result.v2.json
 
   - name: export
     description: Stream a full kubectl get -o json (never Secrets) into an artifact, with a small summary

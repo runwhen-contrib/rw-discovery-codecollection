@@ -1,0 +1,116 @@
+{
+  "$defs": {
+    "CliFullOutput": {
+      "description": "Where the whole output of a truncated `cli` result can be had: the\nqueued `task` to run next (`export` for a `get`, `logs` for a `logs`) and\nthe `inputs` to pass it, keyed by that task's own input names. `inputs`\ncarries only the ones the command supplied, plus `clusterName` when the\n`cli` call knew it. The task's output covers everything the command\nselected, and can cover more: a `get` of named objects widens to every\nobject of those types, `--grep` and the other presentation flags are\nignored (`export` always returns JSON, `logs` always adds `--prefix\n--timestamps`), and a `logs` command with no `--since` gets the task's\nown default window.",
+      "properties": {
+        "task": {
+          "enum": [
+            "export",
+            "logs"
+          ],
+          "title": "Task",
+          "type": "string"
+        },
+        "inputs": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputs",
+          "type": "object"
+        }
+      },
+      "required": [
+        "task",
+        "inputs"
+      ],
+      "title": "CliFullOutput",
+      "type": "object"
+    },
+    "CliRejection": {
+      "description": "Why the `cli` task's argv was refused (platform-contract \u00a77) --\nnever raised, always carried on `CliResult.rejected`.",
+      "properties": {
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "hint": {
+          "title": "Hint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason",
+        "hint"
+      ],
+      "title": "CliRejection",
+      "type": "object"
+    }
+  },
+  "description": "Output of the `cli` task -- `rw.cli_result.v2`. `rejected` is set,\nand `exitCode` is -1, when `argv` failed validation before anything\nexecs; every other field is the real `kubectl` subprocess result\notherwise (`stdout`/`stderr` still present, empty, in the rejected\ncase). `fullOutput` is set only when `truncated` is true and the\ncommand is a `get` or `logs` that a queued task can reproduce in full;\nit is null in every other case, including a rejected command.",
+  "properties": {
+    "argv": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Argv",
+      "type": "array"
+    },
+    "exitCode": {
+      "title": "Exitcode",
+      "type": "integer"
+    },
+    "stdout": {
+      "title": "Stdout",
+      "type": "string"
+    },
+    "stderr": {
+      "title": "Stderr",
+      "type": "string"
+    },
+    "truncated": {
+      "title": "Truncated",
+      "type": "boolean"
+    },
+    "stdoutBytes": {
+      "title": "Stdoutbytes",
+      "type": "integer"
+    },
+    "durationMs": {
+      "title": "Durationms",
+      "type": "integer"
+    },
+    "rejected": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CliRejection"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "fullOutput": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CliFullOutput"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "argv",
+    "exitCode",
+    "stdout",
+    "stderr",
+    "truncated",
+    "stdoutBytes",
+    "durationMs"
+  ],
+  "title": "CliResult",
+  "type": "object"
+}

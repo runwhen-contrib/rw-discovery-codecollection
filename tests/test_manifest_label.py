@@ -37,9 +37,9 @@ def _manifest(schema_ref: str | None) -> dict:
 # ---------------------------------------------------------------------------
 # the real, checked-in manifest
 # ---------------------------------------------------------------------------
-def test_real_manifest_schemas_label_has_exactly_the_five_published_schemas():
-    # Today schemas/ holds exactly the five versions the manifest references (v1 of each) --
-    # once a schema is versioned past v1, this label grows to carry the older version too; see
+def test_real_manifest_schemas_label_has_exactly_the_published_schemas():
+    # schemas/ holds every version ever published, not only the ones the manifest references:
+    # `cli_result` has moved to v2, so the label carries v1 of it alongside; see
     # test_schemas_map_includes_every_file_in_schemas_dir_not_only_referenced below.
     outputs = compute_outputs()
     decoded = json.loads(base64.b64decode(outputs["schemas_b64"]))
@@ -47,6 +47,7 @@ def test_real_manifest_schemas_label_has_exactly_the_five_published_schemas():
         "discovery_summary.v1.json",
         "k8s_object.v1.json",
         "cli_result.v1.json",
+        "cli_result.v2.json",
         "k8s_export_summary.v1.json",
         "k8s_logs_summary.v1.json",
     ]

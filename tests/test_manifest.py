@@ -253,6 +253,7 @@ def test_manifest_label_script_reports_the_real_manifests_output_schemas():
         "discovery_summary.v1.json",
         "k8s_object.v1.json",
         "cli_result.v1.json",
+        "cli_result.v2.json",
         "k8s_export_summary.v1.json",
         "k8s_logs_summary.v1.json",
     ]

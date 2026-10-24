@@ -287,8 +287,10 @@ outputs. `k8s-discovery` declares five (a setup task and four tasks):
   applied to, rather than pushed with a false empty or zero count (the platform keeps the last
   value it had and ages it into `stale` by the facet's own TTL instead).
 - **`cli`** -- inputs `{clusterName, argv, maxBytes?, timeoutSeconds?}`; output `result` (kind
-  `rw.cli_result.v1`): `{argv, exitCode, stdout, stderr, truncated, stdoutBytes, durationMs,
-  rejected?}`. Declared `readOnly: true` and `invocation: [sync]` in the manifest: papi calls it
+  `rw.cli_result.v2`): `{argv, exitCode, stdout, stderr, truncated, stdoutBytes, durationMs,
+  rejected?, fullOutput?}`. A `get` or `logs` whose output was cut (`truncated`) names, in
+  `fullOutput`, the queued `export`/`logs` task below that returns all of it (§7). Declared
+  `readOnly: true` and `invocation: [sync]` in the manifest: papi calls it
   synchronously, and it never writes to the platform's inventory. It is this capability's one
   exception to "never shells out" -- see §7 for its full validation and execution contract.
   `inspect` (a narrower, sanitized `get`/`describe` over the Kubernetes API, no shell) has been
@@ -336,7 +338,7 @@ are the reference implementations this section mirrors):
   blob -- never a separate build artifact, and never a platform release -- to learn the
   capability's id, version, and full manifest.
 - **The output schemas ride the image too.** A task output's `schema:` value (e.g.
-  `./schemas/cli_result.v1.json`) only names the JSON Schema file, relative to `manifest.yaml`;
+  `./schemas/cli_result.v2.json`) only names the JSON Schema file, relative to `manifest.yaml`;
   the file itself does not otherwise leave this repo. A second OCI label,
   `com.runwhen.capability.schemas.v1`, carries the base64 of one compact JSON object mapping every
   schema file in the capability's `schemas/` directory (not only the ones the current manifest
@@ -452,9 +454,41 @@ blocked on a full pipe), so the response is genuinely the first `maxBytes` of *m
 a somewhat-larger raw capture. stderr is capped independently, at a fixed 4 KB, no filtering. The
 kubeconfig file is removed once the command has finished, success or not.
 
-**`rw.cli_result.v1`** (the `cli` task's only output): `{argv: [str], exitCode: int, stdout: str,
-stderr: str, truncated: bool, stdoutBytes: int, durationMs: int, rejected: {reason, hint} | null}`.
+**`rw.cli_result.v2`** (the `cli` task's only output): `{argv: [str], exitCode: int, stdout: str,
+stderr: str, truncated: bool, stdoutBytes: int, durationMs: int, rejected: {reason, hint} | null,
+fullOutput: {task, inputs} | null}`.
 `rejected` is set, and `exitCode` is `-1`, exactly when validation failed -- `subprocess` is never
 invoked in that case. `argv` is the normalised argv actually run (for a rejected request, the argv
 as received); it never carries `--kubeconfig`/`--request-timeout`, which are the executor's own
-addition, not part of the validated command.
+addition, not part of the validated command. v2 adds `fullOutput`; `cli_result.v1.json` stays
+published, unchanged, for results that were produced against it.
+
+`fullOutput` tells an agent holding a `truncated` result which queued task returns the rest:
+`{"task": "export" | "logs", "inputs": {...}}`, `inputs` keyed by that task's own input names
+(§5) and never holding a null. It is set only when the result is `truncated`, was not rejected,
+and the command is a `get` (-> `export`) or a `logs` (-> `logs`); it is always present, `null`
+otherwise. `inputs` is derived from the normalised argv:
+
+- `get` -> `export`: `resources` is the first positional as given (`pods`, `pods,svc`, a single
+  `pods/web-0`); for a type followed by names (`pods a b`) it is the type, and for several
+  `type/name` arguments the de-duplicated list of their types. `namespace` and `selector` are the
+  last `--namespace`/`--selector`; `--all-namespaces` (set, not `=false`) leaves `namespace` out
+  and, because `kubectl` refuses a get by name across all namespaces, also cuts every `type/name`
+  back to its type (`pod/web-0 -A` gives `pod`).
+- `logs` -> `logs`: `workload` is the positional (`logs POD CONTAINER` also gives `container`;
+  `--container` wins), plus `selector`, `namespace`, `since` (when given; otherwise the task's own
+  default applies) and `container` (left out under `--all-containers`).
+- `clusterName` is included when the `cli` call carries one.
+
+The task covers everything the command selected and can cover more (`get pods web-0` exports
+every pod). `get`'s `--output`, `--field-selector` and `--sort-by` are not carried (the export is
+always JSON), and neither are `--grep`, `--tail` and the other `logs` flags, so the full output is
+not `--grep`-filtered. One exception: a `logs` command with no `--since` maps to the `logs` task's
+default window of `6h`, which for a quiet pod can hold fewer lines than the `cli` call's default
+tail of 200 lines.
+`fullOutput` is `null` whenever the queued task cannot stand in for the command: no namespace
+(neither `--namespace` nor `--all-namespaces`, which would read the kubeconfig's default
+namespace), no resource, `logs --previous` or `--since-time`, both a selector and a workload, or
+inputs the task would itself refuse (Secrets, a name that is not a DNS label, a `--since` such as
+`1.5h`). The expected hints for a set of commands are in `tests/cli_vectors.json`'s
+`fullOutputCases`.

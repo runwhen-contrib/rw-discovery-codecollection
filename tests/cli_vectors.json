@@ -1,5 +1,5 @@
 {
-  "comment": "Platform CLI v1.1 shared validator vectors (cli-allowlist-v1.1.md). Copy verbatim into each repo's tests. max_bytes = 16384 (the pack default), so the logs default --limit-bytes is 65536.",
+  "comment": "Platform CLI v1.1 shared validator vectors (cli-allowlist-v1.1.md). Copy verbatim into each repo's tests. max_bytes = 16384 (the pack default), so the logs default --limit-bytes is 65536. `cases` hold the validator's verdicts; `fullOutputCases` hold the `fullOutput` hint a cli_result v2 carries for each command whose output came back truncated: validate the command with max_bytes, then derive the hint from its normalised argv and `clusterName`. A null `fullOutput` means no queued task can reproduce the command.",
   "maxBytes": 16384,
   "cases": [
     {
@@ -458,6 +458,390 @@
       "command": "logs deploy/x --limit-bytes=-5",
       "ok": false,
       "reason": "bad-value"
+    }
+  ],
+  "fullOutputCases": [
+    {
+      "command": "get pods -n web",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "export",
+        "inputs": {
+          "clusterName": "c1",
+          "resources": "pods",
+          "namespace": "web"
+        }
+      }
+    },
+    {
+      "command": "get pods -A",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "export",
+        "inputs": {
+          "clusterName": "c1",
+          "resources": "pods"
+        }
+      }
+    },
+    {
+      "command": "get pods -n web -A",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "export",
+        "inputs": {
+          "clusterName": "c1",
+          "resources": "pods"
+        }
+      }
+    },
+    {
+      "command": "get pod/web-0 -A",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "export",
+        "inputs": {
+          "clusterName": "c1",
+          "resources": "pod"
+        }
+      }
+    },
+    {
+      "command": "get deploy/web svc/web -A",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "export",
+        "inputs": {
+          "clusterName": "c1",
+          "resources": "deploy,svc"
+        }
+      }
+    },
+    {
+      "command": "get pods -l app=web -n web",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "export",
+        "inputs": {
+          "clusterName": "c1",
+          "resources": "pods",
+          "namespace": "web",
+          "selector": "app=web"
+        }
+      }
+    },
+    {
+      "command": "get pod/web-0 -n web",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "export",
+        "inputs": {
+          "clusterName": "c1",
+          "resources": "pod/web-0",
+          "namespace": "web"
+        }
+      }
+    },
+    {
+      "command": "get pods web-0 web-1 -n web",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "export",
+        "inputs": {
+          "clusterName": "c1",
+          "resources": "pods",
+          "namespace": "web"
+        }
+      }
+    },
+    {
+      "command": "get pods,svc -n web",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "export",
+        "inputs": {
+          "clusterName": "c1",
+          "resources": "pods,svc",
+          "namespace": "web"
+        }
+      }
+    },
+    {
+      "command": "get deploy/web svc/web pod/web-0 -n web",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "export",
+        "inputs": {
+          "clusterName": "c1",
+          "resources": "deploy,svc,pod",
+          "namespace": "web"
+        }
+      }
+    },
+    {
+      "command": "get pod/web-0 pod/web-1 -n web",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "export",
+        "inputs": {
+          "clusterName": "c1",
+          "resources": "pod",
+          "namespace": "web"
+        }
+      }
+    },
+    {
+      "command": "get pod/web-0 svc -n web",
+      "clusterName": "c1",
+      "fullOutput": null
+    },
+    {
+      "command": "get pods -n web -o yaml --sort-by=.metadata.name --field-selector=status.phase=Running",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "export",
+        "inputs": {
+          "clusterName": "c1",
+          "resources": "pods",
+          "namespace": "web"
+        }
+      }
+    },
+    {
+      "command": "get pods -n a -n web",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "export",
+        "inputs": {
+          "clusterName": "c1",
+          "resources": "pods",
+          "namespace": "web"
+        }
+      }
+    },
+    {
+      "command": "get pods -n web --namespace=",
+      "clusterName": "c1",
+      "fullOutput": null
+    },
+    {
+      "command": "get pods -n web --selector=",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "export",
+        "inputs": {
+          "clusterName": "c1",
+          "resources": "pods",
+          "namespace": "web"
+        }
+      }
+    },
+    {
+      "command": "get pods -n web --all-namespaces=false",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "export",
+        "inputs": {
+          "clusterName": "c1",
+          "resources": "pods",
+          "namespace": "web"
+        }
+      }
+    },
+    {
+      "command": "get pods --all-namespaces=false",
+      "clusterName": "c1",
+      "fullOutput": null
+    },
+    {
+      "command": "get pods",
+      "clusterName": "c1",
+      "fullOutput": null
+    },
+    {
+      "command": "get -n web",
+      "clusterName": "c1",
+      "fullOutput": null
+    },
+    {
+      "command": "get pods -n Web",
+      "clusterName": "c1",
+      "fullOutput": null
+    },
+    {
+      "command": "get secrets -n web",
+      "clusterName": "c1",
+      "fullOutput": null
+    },
+    {
+      "command": "get pods,secrets -n web",
+      "clusterName": "c1",
+      "fullOutput": null
+    },
+    {
+      "command": "describe pods -n web",
+      "clusterName": "c1",
+      "fullOutput": null
+    },
+    {
+      "command": "logs deploy/web -n web",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "logs",
+        "inputs": {
+          "clusterName": "c1",
+          "namespace": "web",
+          "workload": "deploy/web"
+        }
+      }
+    },
+    {
+      "command": "logs -l app=web -n web",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "logs",
+        "inputs": {
+          "clusterName": "c1",
+          "namespace": "web",
+          "selector": "app=web"
+        }
+      }
+    },
+    {
+      "command": "logs -l app=web -n web -c api --since=1h",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "logs",
+        "inputs": {
+          "clusterName": "c1",
+          "namespace": "web",
+          "selector": "app=web",
+          "since": "1h",
+          "container": "api"
+        }
+      }
+    },
+    {
+      "command": "logs web-0 api -n web",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "logs",
+        "inputs": {
+          "clusterName": "c1",
+          "namespace": "web",
+          "workload": "web-0",
+          "container": "api"
+        }
+      }
+    },
+    {
+      "command": "logs web-0 api -n web --container=sidecar",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "logs",
+        "inputs": {
+          "clusterName": "c1",
+          "namespace": "web",
+          "workload": "web-0",
+          "container": "sidecar"
+        }
+      }
+    },
+    {
+      "command": "logs deploy/web -n web --all-containers",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "logs",
+        "inputs": {
+          "clusterName": "c1",
+          "namespace": "web",
+          "workload": "deploy/web"
+        }
+      }
+    },
+    {
+      "command": "logs deploy/web -n web -c api --all-containers",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "logs",
+        "inputs": {
+          "clusterName": "c1",
+          "namespace": "web",
+          "workload": "deploy/web"
+        }
+      }
+    },
+    {
+      "command": "logs deploy/web -n web --tail=50 --timestamps --grep=error",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "logs",
+        "inputs": {
+          "clusterName": "c1",
+          "namespace": "web",
+          "workload": "deploy/web"
+        }
+      }
+    },
+    {
+      "command": "logs deploy/web -n web --since=1h --since=2h",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "logs",
+        "inputs": {
+          "clusterName": "c1",
+          "namespace": "web",
+          "workload": "deploy/web",
+          "since": "2h"
+        }
+      }
+    },
+    {
+      "command": "logs deploy/web -n web --previous=false",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "logs",
+        "inputs": {
+          "clusterName": "c1",
+          "namespace": "web",
+          "workload": "deploy/web"
+        }
+      }
+    },
+    {
+      "command": "logs deploy/web -n web --previous",
+      "clusterName": "c1",
+      "fullOutput": null
+    },
+    {
+      "command": "logs deploy/web",
+      "clusterName": "c1",
+      "fullOutput": null
+    },
+    {
+      "command": "logs -n web",
+      "clusterName": "c1",
+      "fullOutput": null
+    },
+    {
+      "command": "logs -l app=web web-0 -n web",
+      "clusterName": "c1",
+      "fullOutput": null
+    },
+    {
+      "command": "logs web-0 api extra -n web",
+      "clusterName": "c1",
+      "fullOutput": null
+    },
+    {
+      "command": "logs deploy/web -n web --since-time=2026-01-01T00:00:00Z",
+      "clusterName": "c1",
+      "fullOutput": null
+    },
+    {
+      "command": "logs deploy/web -n web --since=1.5h",
+      "clusterName": "c1",
+      "fullOutput": null
     }
   ]
 }

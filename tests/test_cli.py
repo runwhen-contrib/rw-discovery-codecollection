@@ -11,6 +11,9 @@
   Every execution test asserts the exact argv the fake received: the
   executor's own `--kubeconfig`/`--request-timeout`, then the normalised
   argv, and nothing else.
+- `fullOutput`, the hint a truncated result carries naming the queued task
+  (`export` or `logs`) that returns the whole output: derived from the same
+  vector file's `fullOutputCases`, then through `run_cli()` end to end.
 """
 
 from __future__ import annotations
@@ -23,16 +26,23 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from runwhen_capability import Context
+from runwhen_capability.loader import load_capability, load_manifest
 
 from rwdiscovery import cli
+from rwdiscovery.export import build_export_argv
+from rwdiscovery.logs import DEFAULT_SINCE, build_logs_argv
+from rwdiscovery.models import CliResult
 from rwdiscovery.packbuild import load_pack_yaml
 
+CAPABILITY_DIR = Path(__file__).resolve().parent.parent / "capabilities" / "k8s-discovery"
 CLI_BLOCK = load_pack_yaml()["cli"]
 
 VECTORS = json.loads((Path(__file__).resolve().parent / "cli_vectors.json").read_text())
 MAX_BYTES = VECTORS["maxBytes"]
 OK_CASES = [case for case in VECTORS["cases"] if case["ok"]]
 REJECTED_CASES = [case for case in VECTORS["cases"] if not case["ok"]]
+FULL_OUTPUT_CASES = VECTORS["fullOutputCases"]
 SPLITTABLE_CASES = [case for case in VECTORS["cases"] if case.get("reason") != "unparsable"]
 
 DEFAULT_LIMIT_BYTES = 4 * CLI_BLOCK["output"]["defaultBytes"]
@@ -461,3 +471,268 @@ def test_run_cli_rejects_a_disallowed_argv_and_never_execs(tmp_path, argv, reaso
     assert result["argv"] == argv
     assert result["stdout"] == ""
     assert not (tmp_path / "received-argv.json").exists()
+
+
+# --- fullOutput: which queued task returns the whole of a truncated result -----
+
+# A line longer than any `max_bytes` below, so the capture is cut.
+_LONG_OUTPUT = """
+    import sys
+    sys.stdout.write("0123456789ABCDEFGHIJ\\n")
+    """
+
+
+def _run_truncated(tmp_path: Path, argv: list[str], **kwargs) -> dict:
+    script = _write_fake_kubectl(tmp_path, _LONG_OUTPUT)
+    return cli.run_cli(
+        kubeconfig_yaml=KUBECONFIG_YAML,
+        argv=argv,
+        workdir=tmp_path / "work",
+        max_bytes=10,
+        cli_block=CLI_BLOCK,
+        kubectl_path=str(script),
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize("case", FULL_OUTPUT_CASES, ids=[case["command"] for case in FULL_OUTPUT_CASES])
+def test_shared_vector_full_output(case):
+    validation = cli.validate(case["command"], CLI_BLOCK, max_bytes=MAX_BYTES)
+    assert validation.ok, validation.rejection
+    assert cli.full_output_for(validation.argv, cluster_name=case["clusterName"]) == case["fullOutput"]
+
+
+def test_the_full_output_vectors_cover_both_tasks_and_the_null_cases():
+    tasks = {case["fullOutput"]["task"] for case in FULL_OUTPUT_CASES if case["fullOutput"]}
+    assert tasks == {"export", "logs"}
+    assert any(case["fullOutput"] is None for case in FULL_OUTPUT_CASES)
+
+
+def test_full_output_inputs_are_the_queued_tasks_own_manifest_inputs():
+    """The hint is meant to be passed straight to the named task: every key is one of its inputs."""
+    manifest_inputs = {task["name"]: set(task["inputs"]) for task in load_manifest(CAPABILITY_DIR)["tasks"]}
+    hints = [case["fullOutput"] for case in FULL_OUTPUT_CASES if case["fullOutput"]]
+    assert hints
+    for hint in hints:
+        assert set(hint) == {"task", "inputs"}
+        assert set(hint["inputs"]) <= manifest_inputs[hint["task"]]
+        assert all(isinstance(value, str) and value for value in hint["inputs"].values())
+
+
+def test_every_full_output_hint_is_accepted_by_the_task_it_names():
+    for case in FULL_OUTPUT_CASES:
+        hint = case["fullOutput"]
+        if hint is None:
+            continue
+        inputs = {key: value for key, value in hint["inputs"].items() if key != "clusterName"}
+        if hint["task"] == "export":
+            build_export_argv(inputs.get("resources", "all"), inputs.get("namespace"), inputs.get("selector"))
+        else:
+            build_logs_argv(
+                inputs["namespace"],
+                selector=inputs.get("selector"),
+                workload=inputs.get("workload"),
+                container=inputs.get("container"),
+                since=inputs.get("since", DEFAULT_SINCE),
+            )
+
+
+def test_truncated_logs_suggests_logs_task(tmp_path):
+    result = _run_truncated(
+        tmp_path, ["logs", "deploy/web", "-n", "web", "--since=1h", "--grep=ABC"], cluster_name="c1"
+    )
+    assert result["truncated"] is True
+    assert result["fullOutput"] == {
+        "task": "logs",
+        "inputs": {"clusterName": "c1", "namespace": "web", "workload": "deploy/web", "since": "1h"},
+    }
+
+
+def test_truncated_get_suggests_export(tmp_path):
+    result = _run_truncated(tmp_path, ["get", "pods", "-n", "web", "-l", "app=web", "-o", "wide"], cluster_name="c1")
+    assert result["truncated"] is True
+    assert result["fullOutput"] == {
+        "task": "export",
+        "inputs": {"clusterName": "c1", "resources": "pods", "namespace": "web", "selector": "app=web"},
+    }
+
+
+def test_untruncated_has_no_full_output(tmp_path):
+    script = _write_fake_kubectl(tmp_path, 'import sys; sys.stdout.write("ok\\n")')
+    result = cli.run_cli(
+        kubeconfig_yaml=KUBECONFIG_YAML,
+        argv=["get", "pods", "-n", "web"],
+        workdir=tmp_path / "work",
+        cli_block=CLI_BLOCK,
+        kubectl_path=str(script),
+        cluster_name="c1",
+    )
+    assert result["truncated"] is False
+    assert "fullOutput" in result
+    assert result["fullOutput"] is None
+
+
+def test_a_rejected_command_has_no_full_output(tmp_path):
+    script = _write_fake_kubectl(tmp_path, "")
+    result = cli.run_cli(
+        kubeconfig_yaml=KUBECONFIG_YAML,
+        argv=["get", "Secret", "s1", "-n", "web", "-oyaml"],
+        workdir=tmp_path / "work",
+        cli_block=CLI_BLOCK,
+        kubectl_path=str(script),
+        cluster_name="c1",
+    )
+    assert result["rejected"]["reason"] == "sensitive-type"
+    assert "fullOutput" in result
+    assert result["fullOutput"] is None
+
+
+def test_a_truncated_result_for_a_verb_with_no_queued_task_has_no_full_output(tmp_path):
+    result = _run_truncated(tmp_path, ["describe", "pods", "-n", "web"], cluster_name="c1")
+    assert result["truncated"] is True
+    assert result["fullOutput"] is None
+
+
+def test_a_truncated_get_in_the_default_namespace_has_no_full_output(tmp_path):
+    """No `-n` and no `-A` reads the kubeconfig's namespace; the queued task cannot say which."""
+    result = _run_truncated(tmp_path, ["get", "pods"], cluster_name="c1")
+    assert result["truncated"] is True
+    assert result["fullOutput"] is None
+
+
+def test_a_hint_for_a_call_with_no_cluster_name_omits_cluster_name(tmp_path):
+    result = _run_truncated(tmp_path, ["get", "pods", "-A"])
+    assert result["fullOutput"] == {"task": "export", "inputs": {"resources": "pods"}}
+
+
+def test_a_hint_that_the_queued_task_would_refuse_is_dropped(tmp_path):
+    result = _run_truncated(tmp_path, ["get", "secrets", "-n", "web"], cluster_name="c1")
+    assert result["truncated"] is True
+    assert result["fullOutput"] is None
+
+
+def test_a_timed_out_command_still_names_the_queued_task(tmp_path):
+    script = _write_fake_kubectl(tmp_path, "import time; time.sleep(5)")
+    result = cli.run_cli(
+        kubeconfig_yaml=KUBECONFIG_YAML,
+        argv=["logs", "deploy/web", "-n", "web"],
+        workdir=tmp_path / "work",
+        timeout_seconds=1,
+        cli_block=CLI_BLOCK,
+        kubectl_path=str(script),
+        cluster_name="c1",
+    )
+    assert result["truncated"] is True
+    assert result["fullOutput"] == {
+        "task": "logs",
+        "inputs": {"clusterName": "c1", "namespace": "web", "workload": "deploy/web"},
+    }
+
+
+@pytest.mark.parametrize("truncated", [True, False])
+def test_run_cli_results_fit_the_published_model(tmp_path, truncated):
+    argv = ["logs", "deploy/web", "-n", "web"]
+    if truncated:
+        result = _run_truncated(tmp_path, argv, cluster_name="c1")
+    else:
+        script = _write_fake_kubectl(tmp_path, 'import sys; sys.stdout.write("ok\\n")')
+        result = cli.run_cli(
+            kubeconfig_yaml=KUBECONFIG_YAML,
+            argv=argv,
+            workdir=tmp_path / "work",
+            cli_block=CLI_BLOCK,
+            kubectl_path=str(script),
+        )
+    model = CliResult.model_validate(result)
+    assert model.truncated is truncated
+    assert (model.fullOutput is not None) is truncated
+    assert model.model_dump() == result
+
+
+def test_a_rejected_result_fits_the_published_model(tmp_path):
+    script = _write_fake_kubectl(tmp_path, "")
+    result = cli.run_cli(
+        kubeconfig_yaml=KUBECONFIG_YAML,
+        argv=["delete", "pod", "x"],
+        workdir=tmp_path / "work",
+        cli_block=CLI_BLOCK,
+        kubectl_path=str(script),
+    )
+    model = CliResult.model_validate(result)
+    assert model.rejected is not None
+    assert model.fullOutput is None
+    assert model.model_dump() == result
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        # bare, "=true" and "=false" booleans: the last occurrence decides
+        (["get", "pods", "--all-namespaces", "--all-namespaces=false"], None),
+        (["get", "pods", "--all-namespaces=false", "--all-namespaces"], {"resources": "pods"}),
+        (["get", "pods", "--namespace=web", "--all-namespaces=true"], {"resources": "pods"}),
+        (
+            ["logs", "web-0", "--namespace=web", "--previous", "--previous=false"],
+            {"namespace": "web", "workload": "web-0"},
+        ),
+        (["logs", "web-0", "--namespace=web", "--previous=false", "--previous"], None),
+        (
+            ["logs", "web-0", "ctr", "--namespace=web", "--all-containers=false"],
+            {"namespace": "web", "workload": "web-0", "container": "ctr"},
+        ),
+        (
+            ["logs", "web-0", "ctr", "--namespace=web", "--all-containers=true"],
+            {"namespace": "web", "workload": "web-0"},
+        ),
+        # an empty value is the same as no flag
+        (["get", "pods", "--namespace="], None),
+        (["get", "pods", "--namespace=web", "--namespace="], None),
+        (["get", "pods", "--namespace=web", "--selector="], {"resources": "pods", "namespace": "web"}),
+        (["logs", "web-0", "--namespace=web", "--since="], {"namespace": "web", "workload": "web-0"}),
+        # a single type/name stays as given in a namespace, but across all namespaces kubectl refuses a
+        # get by name, so every type/name is cut back to its type
+        (["get", "pod/a", "--namespace=web"], {"resources": "pod/a", "namespace": "web"}),
+        (["get", "pod/a", "--all-namespaces"], {"resources": "pod"}),
+        (["get", "pod/a", "pod/b", "--all-namespaces"], {"resources": "pod"}),
+        (["get", "pod/a", "svc/b", "--all-namespaces=true"], {"resources": "pod,svc"}),
+        (["get", "pods", "a", "--all-namespaces"], {"resources": "pods"}),
+        (["get", "pod/a", "svc", "--all-namespaces"], None),
+        # a resource list kubectl itself refuses is not hinted
+        (["get", "pods/a", "svc", "--namespace=web"], None),
+        (["get", "/a", "pods/b", "--namespace=web"], None),
+        # a flag value cannot smuggle a second flag past the task's own checks
+        (["get", "pods", "--namespace=--kubeconfig=/x"], None),
+        (["get", "-1", "--namespace=web"], None),
+        (["logs", "web-0", "--namespace=web", "--since=1h; ls"], None),
+        # a verb with no queued task
+        (["events", "--namespace=web"], None),
+        (["top", "pods", "--namespace=web"], None),
+    ],
+)
+def test_full_output_for_edge_cases(argv, expected):
+    result = cli.full_output_for(argv, cluster_name=None)
+    if expected is None:
+        assert result is None
+    else:
+        assert result["task"] == ("logs" if argv[0] == "logs" else "export")
+        assert result["inputs"] == expected
+
+
+def test_the_cli_task_threads_the_cluster_name_into_the_hint(tmp_path, monkeypatch):
+    _write_fake_kubectl(tmp_path, _LONG_OUTPUT, name="kubectl")
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    ctx = Context(
+        capability="k8s-discovery",
+        operation="cli",
+        workdir=tmp_path / "work",
+        credentials={"kubeconfig": KUBECONFIG_YAML},
+    )
+    task = load_capability(CAPABILITY_DIR).registry.tasks["cli"].func
+
+    result = task(ctx, cluster_name="c1", argv=["get", "pods", "-n", "web"], max_bytes=10)["result"]
+
+    assert result["truncated"] is True
+    assert result["fullOutput"] == {
+        "task": "export",
+        "inputs": {"clusterName": "c1", "resources": "pods", "namespace": "web"},
+    }

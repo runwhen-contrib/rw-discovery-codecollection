@@ -42,7 +42,7 @@ def discover(
     return {"summary": summary}
 
 
-@task(outputs={"result": "rw.cli_result.v1"})
+@task(outputs={"result": "rw.cli_result.v2"})
 def cli(
     ctx: Context,
     cluster_name: str,
@@ -56,6 +56,7 @@ def cli(
         workdir=ctx.workdir,
         max_bytes=max_bytes,
         timeout_seconds=timeout_seconds,
+        cluster_name=cluster_name,
     )
     return {"result": result}
 

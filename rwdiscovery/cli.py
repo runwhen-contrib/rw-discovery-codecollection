@@ -22,7 +22,9 @@ Two halves:
   the request's own scope directory (same convention as
   `credentials.py.build_api_client`), execs the real `kubectl` binary with
   a scrubbed environment and a wall-clock timeout, and deletes the file
-  again once it's done.
+  again once it's done. When the output had to be cut, the result also
+  names the queued task (`export` or `logs`) that returns all of it
+  (`full_output_for()`).
 """
 
 from __future__ import annotations
@@ -55,6 +57,7 @@ _GREP_FLAG = "grep"
 _UNREPEATABLE_FLAGS = frozenset({_OUTPUT_FLAG, _GREP_FLAG})
 _BOOLEAN_VALUES = frozenset({"true", "false"})
 
+_GET_VERB = "get"
 _LOGS_VERB = "logs"
 _LOGS_WINDOW_FLAGS = frozenset({"tail", "since", "since-time"})
 _LOGS_DEFAULT_TAIL = "--tail=200"
@@ -368,6 +371,160 @@ def _render(flag: _Flag) -> str:
     return f"--{flag.name}" if flag.value is None else f"--{flag.name}={flag.value}"
 
 
+def full_output_for(argv: list[str], *, cluster_name: str | None) -> dict | None:
+    """`{"task": "export"|"logs", "inputs": {...}}`: the queued task that
+    returns the whole output of the `get` or `logs` command whose normalised
+    `argv` (as `validate()` returns it) was cut short, with the inputs to
+    give it -- or `None` when no queued task can stand in for the command.
+
+    A hint never fails the queued task and never narrows the selection,
+    except for the `logs` default window below. `None` when the task cannot
+    say what the command meant (`get` with neither `--namespace` nor
+    `--all-namespaces` reads the kubeconfig's own default namespace; `logs`
+    without `--namespace`), when it cannot do it at all (`logs --previous`,
+    `--since-time`), or when it would refuse the inputs (the same builder the
+    task runs, so Secrets, a bad name or `--since` such as `1.5h` come out
+    `None`). Otherwise the task covers everything the command selected and
+    can cover more: `get pods web-0` becomes every pod, and `--output`,
+    `--field-selector` and `--sort-by` are dropped (the export is always
+    JSON), as are `--grep`, `--tail` and the other `logs` flags the task sets
+    itself. The exception: a `logs` command with no `--since` gets the logs
+    task's own default window, which for a quiet pod can hold fewer lines
+    than the command's own tail.
+
+    `inputs` uses the task's own input names, holds only the ones the command
+    supplied (plus `clusterName`, when given), and never a null."""
+    if not argv or argv[0] not in (_GET_VERB, _LOGS_VERB):
+        return None
+    positionals, flags = _split_normalised(argv[1:])
+    if argv[0] == _GET_VERB:
+        task, inputs = "export", _export_inputs(positionals, flags)
+    else:
+        task, inputs = "logs", _logs_inputs(positionals, flags)
+    if inputs is None:
+        return None
+    if cluster_name:
+        inputs = {"clusterName": cluster_name, **inputs}
+    return {"task": task, "inputs": inputs}
+
+
+def _split_normalised(tokens: list[str]) -> tuple[list[str], list[_Flag]]:
+    """The tokens after the verb of a normalised argv: every flag is
+    `--name[=value]`, so anything not starting with `--` is a positional."""
+    positionals: list[str] = []
+    flags: list[_Flag] = []
+    for token in tokens:
+        if token.startswith("--"):
+            name, has_equals, value = token[2:].partition("=")
+            flags.append(_Flag(name, value if has_equals else None))
+        else:
+            positionals.append(token)
+    return positionals, flags
+
+
+def _last_value(flags: list[_Flag], name: str) -> str | None:
+    """A value flag's final value (kubectl keeps the last occurrence), `None`
+    when it is absent or empty -- kubectl reads an empty value as unset."""
+    value = None
+    for flag in flags:
+        if flag.name == name:
+            value = flag.value
+    return value or None
+
+
+def _is_set(flags: list[_Flag], name: str) -> bool:
+    """A boolean flag's final state: bare or `=true` is set, `=false` is not;
+    the last occurrence wins."""
+    state = False
+    for flag in flags:
+        if flag.name == name:
+            state = flag.value != "false"
+    return state
+
+
+def _export_inputs(positionals: list[str], flags: list[_Flag]) -> dict[str, str] | None:
+    """The `export` task's inputs (minus `clusterName`) for a normalised `get`."""
+    # Imported here: export.py imports this module.
+    from .export import build_export_argv
+
+    all_namespaces = _is_set(flags, "all-namespaces")
+    resources = _export_resources(positionals, all_namespaces=all_namespaces)
+    if resources is None:
+        return None
+    inputs = {"resources": resources}
+    if not all_namespaces:
+        namespace = _last_value(flags, "namespace")
+        if namespace is None:
+            return None
+        inputs["namespace"] = namespace
+    selector = _last_value(flags, "selector")
+    if selector:
+        inputs["selector"] = selector
+    try:
+        build_export_argv(inputs["resources"], inputs.get("namespace"), inputs.get("selector"))
+    except ValueError:
+        return None
+    return inputs
+
+
+def _export_resources(positionals: list[str], *, all_namespaces: bool) -> str | None:
+    """`get`'s positionals as the export's comma list of resource types:
+    `pods`, `pods,svc` and a single `pods/a` as given; `pods a b` (a type,
+    then names) as the type; `pods/a svc/b pods/c` as `pods,svc`. Across all
+    namespaces kubectl refuses a get by name, so there even a single
+    `pods/a` is cut back to its type. Always covers what was asked."""
+    if not positionals:
+        return None
+    first, *rest = positionals
+    if "/" not in first or (not rest and not all_namespaces):
+        return first
+    kinds: list[str] = []
+    for positional in positionals:
+        kind, slash, _name = positional.partition("/")
+        if not slash:
+            return None  # kubectl refuses a bare name beside type/name arguments
+        if kind not in kinds:
+            kinds.append(kind)
+    return ",".join(kinds)
+
+
+def _logs_inputs(positionals: list[str], flags: list[_Flag]) -> dict[str, str] | None:
+    """The `logs` task's inputs (minus `clusterName`) for a normalised `logs`."""
+    # Imported here: logs.py imports this module.
+    from .logs import DEFAULT_SINCE, build_logs_argv
+
+    namespace = _last_value(flags, "namespace")
+    if namespace is None or len(positionals) > 2 or _is_set(flags, "previous"):
+        return None
+    if any(flag.name == "since-time" for flag in flags):
+        return None
+    inputs = {"namespace": namespace}
+    selector = _last_value(flags, "selector")
+    if selector:
+        inputs["selector"] = selector
+    if positionals:
+        inputs["workload"] = positionals[0]
+    since = _last_value(flags, "since")
+    if since:
+        inputs["since"] = since
+    # `logs POD CONTAINER`; an explicit --container wins over the positional.
+    container = _last_value(flags, "container") or (positionals[1] if len(positionals) == 2 else None)
+    if container and not _is_set(flags, "all-containers"):
+        inputs["container"] = container
+    try:
+        # Also refuses a selector together with a workload, and neither.
+        build_logs_argv(
+            namespace,
+            selector=inputs.get("selector"),
+            workload=inputs.get("workload"),
+            container=inputs.get("container"),
+            since=inputs.get("since", DEFAULT_SINCE),
+        )
+    except ValueError:
+        return None
+    return inputs
+
+
 def _drain_capped(stream, max_bytes: int, grep_re: re.Pattern[str] | None) -> tuple[bytes, bool]:
     """Reads `stream` (a binary pipe) line by line, filtering each line
     through `grep_re` BEFORE counting it against `max_bytes` -- a dropped
@@ -408,14 +565,20 @@ def run_cli(
     timeout_seconds: int | None = None,
     cli_block: dict | None = None,
     kubectl_path: str = "kubectl",
+    cluster_name: str | None = None,
 ) -> dict:
-    """Platform-contract §7's executor -- `rw.cli_result.v1`. Re-validates
+    """Platform-contract §7's executor -- `rw.cli_result.v2`. Re-validates
     `argv` from scratch against the pack's own `cli` block, regardless of
     what papi already checked (the edge is authoritative): a rejected
     `argv` returns here with `exitCode: -1` and never reaches `subprocess`.
     An accepted one is never exec'd as given -- only the normalised argv
     `validate()` produced runs, after this executor's own `--kubeconfig`
     and `--request-timeout`.
+
+    A `truncated` result of a `get` or `logs` also carries `fullOutput`, the
+    queued task that returns all of it (`full_output_for()`); `cluster_name`
+    is the `clusterName` that hint passes along, left out when not given.
+    `fullOutput` is `None` in every other case, and always present.
 
     `kubectl_path` is a test seam (an injectable executable path); in
     production it's the bare `"kubectl"` name, resolved via the scrubbed
@@ -433,6 +596,7 @@ def run_cli(
             "stdoutBytes": 0,
             "durationMs": 0,
             "rejected": {"reason": validation.rejection.reason, "hint": validation.rejection.hint},
+            "fullOutput": None,
         }
 
     effective_timeout = resolve_timeout_seconds(timeout_seconds, cli_block["output"])
@@ -486,4 +650,5 @@ def run_cli(
             "stdoutBytes": len(stdout_bytes),
             "durationMs": int((time.monotonic() - start) * 1000),
             "rejected": None,
+            "fullOutput": full_output_for(validation.argv, cluster_name=cluster_name) if truncated else None,
         }

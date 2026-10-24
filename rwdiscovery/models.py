@@ -6,7 +6,7 @@ time, the same convention `rw-checks-codecollection` uses for its own
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
@@ -87,15 +87,35 @@ class CliRejection(BaseModel):
     hint: str
 
 
+class CliFullOutput(BaseModel):
+    """Where the whole output of a truncated `cli` result can be had: the
+    queued `task` to run next (`export` for a `get`, `logs` for a `logs`) and
+    the `inputs` to pass it, keyed by that task's own input names. `inputs`
+    carries only the ones the command supplied, plus `clusterName` when the
+    `cli` call knew it. The task's output covers everything the command
+    selected, and can cover more: a type followed by names, or several
+    `type/name` arguments, widen to every object of those types (a single
+    `type/name` stays as given, except across all namespaces), and `--grep`
+    and the other presentation flags are ignored (`export` always returns
+    JSON, `logs` always adds `--prefix --timestamps`). One exception: a
+    `logs` command with no `--since` gets the logs task's default window,
+    which for a quiet pod can hold fewer lines than the `cli` call's tail."""
+
+    task: Literal["export", "logs"]
+    inputs: dict[str, str]
+
+
 class CliResult(BaseModel):
-    """Output of the `cli` task -- `rw.cli_result.v1`. `rejected` is set,
+    """Output of the `cli` task -- `rw.cli_result.v2`. `rejected` is set,
     and `exitCode` is -1, when `argv` failed validation before anything
     execs; every other field is the real `kubectl` subprocess result
     otherwise (`stdout`/`stderr` still present, empty, in the rejected
-    case)."""
+    case). `fullOutput` is set only when `truncated` is true and the
+    command is a `get` or `logs` that a queued task can stand in for; it is
+    null in every other case, including a rejected command."""
 
     # See DiscoverySummary.SCHEMA_VERSION above.
-    SCHEMA_VERSION: ClassVar[int] = 1
+    SCHEMA_VERSION: ClassVar[int] = 2
 
     argv: list[str]
     exitCode: int
@@ -105,6 +125,7 @@ class CliResult(BaseModel):
     stdoutBytes: int
     durationMs: int
     rejected: CliRejection | None = None
+    fullOutput: CliFullOutput | None = None
 
 
 class _KubectlArtifactSummary(BaseModel):

@@ -90,6 +90,42 @@ tasks:
         kind: rw.cli_result.v1
         schema: ./schemas/cli_result.v1.json
 
+  - name: export
+    description: Stream a full kubectl get -o json (never Secrets) into an artifact, with a small summary
+    readOnly: true
+    inputs:
+      clusterName: { from: request }
+      resources:   { from: request, optional: true }  # comma list of resource types; defaults to "all"
+      namespace:   { from: request, optional: true }  # omitted: all namespaces
+      selector:    { from: request, optional: true }  # label selector
+    outputs:
+      dump:
+        kind: artifact
+        contentType: application/json
+        maxSize: 5Gi
+      summary:
+        kind: rw.k8s_export_summary.v1
+        schema: ./schemas/k8s_export_summary.v1.json
+
+  - name: logs
+    description: Stream the full kubectl logs of a selector's pods or one workload into an artifact, with a small summary
+    readOnly: true
+    inputs:
+      clusterName: { from: request }
+      namespace:   { from: request }
+      selector:    { from: request, optional: true }  # one of selector / workload is required; the task refuses neither or both
+      workload:    { from: request, optional: true }  # e.g. deployment/web -- kubectl reads one pod of it; use selector for all pods
+      since:       { from: request, optional: true }  # a duration such as 90s, 2h or 1h30m; defaults to 6h
+      container:   { from: request, optional: true }  # defaults to all containers
+    outputs:
+      dump:
+        kind: artifact
+        contentType: text/plain
+        maxSize: 5Gi
+      summary:
+        kind: rw.k8s_logs_summary.v1
+        schema: ./schemas/k8s_logs_summary.v1.json
+
 retention:
   pod: on_failure                  # all | on_failure | none
   result: 30d

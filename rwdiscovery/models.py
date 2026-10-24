@@ -105,3 +105,33 @@ class CliResult(BaseModel):
     stdoutBytes: int
     durationMs: int
     rejected: CliRejection | None = None
+
+
+class _KubectlArtifactSummary(BaseModel):
+    """The small JSON that rides beside a `dump` artifact: `bytes` is the
+    artifact's size, `returncode` the `kubectl` exit status (non-zero does not
+    fail the task: the dump holds whatever `kubectl` managed to write), and
+    `stderrTail` the last 4 KiB of its stderr."""
+
+    returncode: int
+    bytes: int
+    stderrTail: str
+
+
+class K8sExportSummary(_KubectlArtifactSummary):
+    """Output of the `export` task -- `rw.k8s_export_summary.v1`. The full
+    `kubectl get -o json` itself is the `dump` artifact (never Secrets); this
+    is only its accounting: `returncode`, `bytes` (the dump's size) and
+    `stderrTail` (the last 4 KiB of stderr)."""
+
+    # See DiscoverySummary.SCHEMA_VERSION above.
+    SCHEMA_VERSION: ClassVar[int] = 1
+
+
+class K8sLogsSummary(_KubectlArtifactSummary):
+    """Output of the `logs` task -- `rw.k8s_logs_summary.v1`. The log text
+    itself is the `dump` artifact; this is only its accounting: `returncode`,
+    `bytes` (the dump's size) and `stderrTail` (the last 4 KiB of stderr)."""
+
+    # See DiscoverySummary.SCHEMA_VERSION above.
+    SCHEMA_VERSION: ClassVar[int] = 1

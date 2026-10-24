@@ -9,6 +9,8 @@ from runwhen_capability import Context, setup, task
 from rwdiscovery import cli as cli_lib
 from rwdiscovery import connect as connect_lib
 from rwdiscovery import discover as discover_lib
+from rwdiscovery import export as export_lib
+from rwdiscovery import logs as logs_lib
 
 
 @setup(outputs=["serverVersion", "clusterUid"])
@@ -56,3 +58,29 @@ def cli(
         timeout_seconds=timeout_seconds,
     )
     return {"result": result}
+
+
+@task(outputs={"dump": "artifact", "summary": "rw.k8s_export_summary.v1"})
+def export(
+    ctx: Context,
+    cluster_name: str,
+    resources: str | None = None,
+    namespace: str | None = None,
+    selector: str | None = None,
+):
+    return export_lib.run_export(ctx, resources=resources, namespace=namespace, selector=selector)
+
+
+@task(outputs={"dump": "artifact", "summary": "rw.k8s_logs_summary.v1"})
+def logs(
+    ctx: Context,
+    cluster_name: str,
+    namespace: str,
+    selector: str | None = None,
+    workload: str | None = None,
+    since: str | None = None,
+    container: str | None = None,
+):
+    return logs_lib.run_logs(
+        ctx, namespace=namespace, selector=selector, workload=workload, since=since, container=container
+    )

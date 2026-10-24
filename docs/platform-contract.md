@@ -259,7 +259,7 @@ a form it could read again later, and nothing about either credential is cached 
 A capability ships a manifest (the RunWhen capability manifest format) declaring an execution
 profile, which subjects it applies to, the credentials it needs (§4), a `setup` task that runs
 once per request before anything else, and its own task list -- each task with typed inputs and
-outputs. `k8s-discovery` declares three:
+outputs. `k8s-discovery` declares five (a setup task and four tasks):
 
 - **`connect`** (setup) -- inputs `{context?}`; runs once per request. Materializes the
   `kubeconfig` credential into an API client, confirms the cluster is actually reachable, and
@@ -293,6 +293,17 @@ outputs. `k8s-discovery` declares three:
   exception to "never shells out" -- see §7 for its full validation and execution contract.
   `inspect` (a narrower, sanitized `get`/`describe` over the Kubernetes API, no shell) has been
   retired in `cli`'s favour: `cli` is now the agent's one read path into a cluster.
+- **`export`** and **`logs`** -- queued (the default `invocation`), `readOnly: true`. Where `cli`'s
+  output is small and capped, these two stream a `kubectl` command's whole output into the `dump`
+  artifact (`kind: artifact`, `maxSize: 5Gi`; `application/json` for `export`, `text/plain` for
+  `logs`) and return a `summary` (`rw.k8s_export_summary.v1` / `rw.k8s_logs_summary.v1`):
+  `{returncode, bytes, stderrTail}` -- the exit status, the artifact's size, and the last 4 KiB of
+  stderr. A non-zero exit does not fail the task. `export` takes `{clusterName, resources?,
+  namespace?, selector?}` and runs `get <resources> -o json` (all namespaces when `namespace` is
+  omitted; Secrets are never exported); `logs` takes `{clusterName, namespace, selector?, workload?,
+  since?, container?}` -- exactly one of `selector`/`workload` -- and runs `logs` with
+  `--prefix --timestamps --since` (default `6h`). The command each builds is checked against §7's
+  allow-list and exec'd the way `cli` is (§7), but its output is not capped or `--grep`-filtered.
 
 `discover`'s bulk push is the only thing that goes through the sanitizer -- see this repo's
 README, "Sanitization policy" section, for the full policy (what is dropped, what is masked, and

@@ -1,0 +1,24 @@
+{
+  "description": "Output of the `export` task -- `rw.k8s_export_summary.v1`. The full\n`kubectl get -o json` itself is the `dump` artifact (never Secrets); this\nis only its accounting: `returncode`, `bytes` (the dump's size) and\n`stderrTail` (the last 4 KiB of stderr).",
+  "properties": {
+    "returncode": {
+      "title": "Returncode",
+      "type": "integer"
+    },
+    "bytes": {
+      "title": "Bytes",
+      "type": "integer"
+    },
+    "stderrTail": {
+      "title": "Stderrtail",
+      "type": "string"
+    }
+  },
+  "required": [
+    "returncode",
+    "bytes",
+    "stderrTail"
+  ],
+  "title": "K8sExportSummary",
+  "type": "object"
+}

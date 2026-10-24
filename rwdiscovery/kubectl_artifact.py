@@ -5,10 +5,11 @@ mapping -- the artifact reference plus a small summary.
 
 Same exec contract as `cli.run_cli()` -- a 0600 kubeconfig file in the
 request's scope directory, deleted when the run ends however it ends, and a
-child environment of exactly PATH, HOME and KUBECONFIG -- except that the
-output is not capped or filtered here: it goes to the artifact, whole.
-`from_process` merges an `env=` over the parent's environment rather than
-replacing it, so the scrub is `env -i` in front of `kubectl`.
+child environment of exactly PATH, HOME and KUBECONFIG (`kubeconfig_file` and
+`scrubbed_env`, which `run_cli` uses too) -- except that the output is not
+capped or filtered here: it goes to the artifact, whole. `from_process`
+merges an `env=` over the parent's environment rather than replacing it, so
+the scrub is `env -i` in front of `kubectl`.
 """
 
 from __future__ import annotations

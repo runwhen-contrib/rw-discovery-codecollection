@@ -27,19 +27,18 @@ Two halves:
 
 from __future__ import annotations
 
-import os
 import re
 import shlex
 import shutil
 import string
 import subprocess
-import tempfile
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import packbuild
+from .kubectl_artifact import kubeconfig_file, scrubbed_env
 
 # Step 2: a token that is exactly one of these, starts with one of the
 # prefixes, or ends with the suffix is shell syntax, not a kubectl argument.
@@ -438,19 +437,8 @@ def run_cli(
 
     effective_timeout = resolve_timeout_seconds(timeout_seconds, cli_block["output"])
 
-    workdir = Path(workdir)
-    workdir.mkdir(parents=True, exist_ok=True)
-    fd, kubeconfig_path = tempfile.mkstemp(dir=workdir, prefix=".kubeconfig-", suffix=".yaml")
-    os.chmod(kubeconfig_path, 0o600)
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(kubeconfig_yaml)
-
-        env = {
-            "PATH": os.environ.get("PATH", ""),
-            "HOME": os.environ.get("HOME", ""),
-            "KUBECONFIG": kubeconfig_path,
-        }
+    with kubeconfig_file(kubeconfig_yaml, workdir) as kubeconfig_path:
+        env = scrubbed_env(kubeconfig_path)
         resolved_kubectl = shutil.which(kubectl_path, path=env["PATH"]) or kubectl_path
         cmd = [
             resolved_kubectl,
@@ -499,8 +487,3 @@ def run_cli(
             "durationMs": int((time.monotonic() - start) * 1000),
             "rejected": None,
         }
-    finally:
-        try:
-            os.unlink(kubeconfig_path)
-        except OSError:
-            pass

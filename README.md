@@ -389,9 +389,11 @@ batch sequencing, sanitization, rollups, and commit partitions end to end.
 
 ## SDK dependency
 
-This repo depends on `runwhen_capability` from `rw-checks-codecollection`, pinned by commit SHA
-(`pyproject.toml`) -- the VCS equivalent of a hash pin (pip's `--require-hashes` mode does not
-support VCS requirements at all, so this one dependency installs in its own, non-hash-checked step
-in `Dockerfile.k8s-discovery`; see that file's header comment). No packaging or SDK changes were
-needed upstream: `rw-checks-codecollection`'s own `pyproject.toml` lives at its repo root and
-packages only `sdk/`, so a plain git dependency resolves to the `runwhen_capability` package alone.
+This repo depends on `runwhen_capability` from
+[`runwhen-contrib/runwhen-capability`](https://github.com/runwhen-contrib/runwhen-capability), pinned
+by commit SHA (`pyproject.toml`) until its release tag is used -- the VCS equivalent of a hash pin
+(pip's `--require-hashes` mode does not support VCS requirements at all, so this one dependency
+installs in its own, non-hash-checked step in `Dockerfile.k8s-discovery`; see that file's header
+comment). No packaging changes were needed upstream: that repo's own `pyproject.toml` lives at its
+repo root and packages only `src/`, so a plain git dependency resolves to the `runwhen_capability`
+package alone.

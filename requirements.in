@@ -6,8 +6,8 @@
 # inside the image's own base (linux/amd64 python:3.12-slim) so the
 # resolution matches what the image will actually install.
 #
-# runwhen-capability (the SDK) and its own deps (pydantic, PyYAML, requests)
-# are installed separately, unpinned by hash, the same way
+# runwhen-capability (the SDK) and its own deps (pydantic, PyYAML, requests,
+# urllib3, jsonschema) are installed separately, unpinned by hash, the same way
 # rw-checks-codecollection installs its SDK layer (`pip install /app`) --
 # only the two dependencies below get the stricter treatment, mirroring how
 # rw-checks-codecollection hash-pins the *tools* it runs, not the SDK.

@@ -6,10 +6,10 @@
 # inside the image's own base (linux/amd64 python:3.12-slim) so the
 # resolution matches what the image will actually install.
 #
-# runwhen-capability (the SDK) and its own deps (pydantic, PyYAML, requests,
-# urllib3, jsonschema) are installed separately, unpinned by hash, the same way
-# rw-checks-codecollection installs its SDK layer (`pip install /app`) --
-# only the two dependencies below get the stricter treatment, mirroring how
-# rw-checks-codecollection hash-pins the *tools* it runs, not the SDK.
+# runwhen-capability (the SDK) is a VCS requirement, which pip's --require-hashes
+# mode cannot check, so it installs in its own step. Of the SDK's dependencies,
+# PyYAML, requests and urllib3 are already hash-pinned below through kubernetes;
+# pydantic and jsonschema (and their dependencies) install in the SDK step
+# without hashes. Only the two dependencies below are pinned here directly.
 kubernetes>=30,<31
 jmespath>=1.0,<2

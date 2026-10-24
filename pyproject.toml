@@ -10,15 +10,16 @@ requires-python = ">=3.12"
 readme = "README.md"
 license = { file = "LICENSE" }
 dependencies = [
-    # Pinned by commit sha, not a branch or tag -- the equivalent of a hash
-    # pin for a VCS source (pip's --require-hashes mode does not support VCS
-    # requirements at all, so this is installed in its own, non-hash-checked
-    # `pip install` step in Dockerfile.k8s-discovery; see that file's
-    # comment). No packaging changes needed upstream: rw-checks-codecollection's
-    # own pyproject.toml lives at its repo root and packages only sdk/, so a
+    # The SDK lives in its own repo, runwhen-contrib/runwhen-capability. Pinned
+    # by commit sha, not a branch -- the equivalent of a hash pin for a VCS
+    # source (pip's --require-hashes mode does not support VCS requirements at
+    # all, so this is installed in its own, non-hash-checked `pip install` step
+    # in Dockerfile.k8s-discovery; see that file's comment). The sha is the
+    # v0.4.0 release commit; switch to the v0.4.0 tag once it is published. That
+    # repo's own pyproject.toml lives at its repo root and packages src/, so a
     # plain git dependency (no `subdirectory=`) resolves to the
     # runwhen_capability package alone.
-    "runwhen-capability @ git+https://github.com/runwhen-contrib/rw-checks-codecollection.git@010799fb68dbfb90119f71c591b63c736a1158ff",
+    "runwhen-capability @ git+https://github.com/runwhen-contrib/runwhen-capability@4317cc671a84b0c7a1a452a1695e9d0baadb9aa9",
     "kubernetes>=30,<31",
     "jmespath>=1.0,<2",
     # Used directly by sync.py (the sync protocol's HTTP client) -- already a

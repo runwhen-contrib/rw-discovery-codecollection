@@ -15,8 +15,8 @@ name: Build And Push
 # secrets.GITHUB_TOKEN, for GHCR login) -- reduced from that repo's two
 # capabilities (rw-checks, rw-worktree) down to this repo's one
 # (k8s-discovery). Image == capability, 1:1
-# (rwdiscovery-adjacent rw-checks-codecollection's
-# sdk/runwhen_capability/loader.py's discover_capability_dir docstring).
+# (runwhen-capability's src/runwhen_capability/loader.py,
+# discover_capability_dir's docstring).
 #
 # Architecture
 # ------------

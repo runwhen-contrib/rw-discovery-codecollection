@@ -31,19 +31,20 @@ _RESOURCES_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9./-]*(,[A-Za-z0-9][A-Za-z0-9./
 def build_export_argv(resources: str, namespace: str | None, selector: str | None) -> list[str]:
     """`get <resources> (--namespace=<ns> | --all-namespaces) --output=json
     [--selector=<sel>]`, after refusing Secrets and anything that is not a
-    plain resource list. An empty `namespace` means all namespaces."""
+    plain resource list. An omitted (None) `namespace` means all namespaces;
+    an empty one is refused."""
     cli_block = packbuild.load_pack_yaml()["cli"]
     sensitive = _NEVER_EXPORTED | {t.lower() for t in cli_block.get("sensitiveTypes") or []}
-    if any(cli.resource_type(part) in sensitive for part in resources.split(",")):
+    if any(cli.resource_type(part.strip()) in sensitive for part in resources.split(",")):
         raise ValueError("secrets are never exported")
     if not _RESOURCES_RE.fullmatch(resources):
         raise ValueError(f"resources must be a comma-separated list of resource types, got {resources!r}")
 
     argv = ["get", resources]
-    if namespace:
-        argv.append(f"--namespace={check_dns_label(namespace, 'namespace')}")
-    else:
+    if namespace is None:
         argv.append("--all-namespaces")
+    else:
+        argv.append(f"--namespace={check_dns_label(namespace, 'namespace')}")
     argv.append("--output=json")
     if selector:
         argv.append(f"--selector={selector}")

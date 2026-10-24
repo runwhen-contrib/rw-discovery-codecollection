@@ -1,5 +1,5 @@
 {
-  "description": "Output of the `logs` task -- `rw.k8s_logs_summary.v1`. The log text\nitself is the `dump` artifact; this is only its accounting: `returncode`,\n`bytes` (the dump's size) and `stderrTail` (the last 4 KiB of stderr).",
+  "description": "Output of the `logs` task -- `rw.k8s_logs_summary.v1`. The log text\nitself is the `dump` artifact; this is only its accounting: `returncode`,\n`bytes` (the dump's size) and `stderrTail` (the last 4 KiB of the captured\nstderr; the SDK keeps the first 1 MiB of it).",
   "properties": {
     "returncode": {
       "title": "Returncode",

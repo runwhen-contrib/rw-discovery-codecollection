@@ -119,13 +119,16 @@ the same way (no shell, a scrubbed environment, a 0600 kubeconfig that is delete
 stream the **whole** output into a `dump` artifact instead, and return a small `summary` beside it:
 `{returncode, bytes, stderrTail}` (`rw.k8s_export_summary.v1` / `rw.k8s_logs_summary.v1`). A non-zero
 `kubectl` exit does not fail the task: the dump keeps whatever `kubectl` wrote, and the summary
-carries the exit code and the last 4 KiB of stderr. Both are bounded by the request's deadline, not
+carries the exit code and the last 4 KiB of the captured stderr (the SDK keeps the first 1 MiB). Both are bounded by the request's deadline, not
 by `kubectl`'s own `--request-timeout`, and both check the `kubectl` they build against the same
 `cli` allow-list.
 
 - **`export`** -- `kubectl get <resources> (--namespace=<ns> | --all-namespaces) --output=json
   [--selector=<sel>]`. **Secrets are never exported:** `secret`, `secrets`, `secrets/<name>` and
-  `secrets.<group>` are refused, anywhere in the list.
+  `secrets.<group>` are refused, anywhere in the list. The dump streams through the task, but
+  `kubectl get -o json` builds the whole list in its own memory before printing it, so a very large
+  export can exceed the pod's memory limit: scope large exports by namespace, selector or resource
+  type.
 - **`logs`** -- `kubectl logs --namespace=<ns> (--selector=<sel> | <workload>) (--all-containers |
   --container=<c>) --prefix --timestamps --since=<since> --tail=-1 --max-log-requests=20
   --ignore-errors`. `--tail=-1` is spelled out because `kubectl` otherwise shows only the last 10

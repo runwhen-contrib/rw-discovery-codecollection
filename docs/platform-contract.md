@@ -298,9 +298,11 @@ outputs. `k8s-discovery` declares five (a setup task and four tasks):
   artifact (`kind: artifact`, `maxSize: 5Gi`; `application/json` for `export`, `text/plain` for
   `logs`) and return a `summary` (`rw.k8s_export_summary.v1` / `rw.k8s_logs_summary.v1`):
   `{returncode, bytes, stderrTail}` -- the exit status, the artifact's size, and the last 4 KiB of
-  stderr. A non-zero exit does not fail the task. `export` takes `{clusterName, resources?,
+  the captured stderr (the SDK keeps the first 1 MiB). A non-zero exit does not fail the task. `export` takes `{clusterName, resources?,
   namespace?, selector?}` and runs `get <resources> -o json` (all namespaces when `namespace` is
-  omitted; Secrets are never exported); `logs` takes `{clusterName, namespace, selector?, workload?,
+  omitted; Secrets are never exported; the dump streams through the task, but `kubectl get -o json`
+  holds the whole list in its own memory before printing, so scope large exports by namespace,
+  selector or resource type); `logs` takes `{clusterName, namespace, selector?, workload?,
   since?, container?}` -- exactly one of `selector`/`workload` -- and runs `logs` with
   `--prefix --timestamps --since` (default `6h`). The command each builds is checked against §7's
   allow-list and exec'd the way `cli` is (§7), but its output is not capped or `--grep`-filtered.

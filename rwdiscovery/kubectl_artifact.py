@@ -69,10 +69,16 @@ def scrubbed_env(kubeconfig_path: str) -> dict[str, str]:
 
 
 def _which(name: str, search_path: str) -> str:
+    """The absolute path of executable `name` (the child runs in the workdir, so
+    a relative result would resolve there). Refused if it contains `=`, which
+    `env` would read as a variable assignment instead of the command."""
     found = shutil.which(name, path=search_path)
     if found is None:
         raise FileNotFoundError(f"{name} not found on PATH")
-    return found
+    resolved = os.path.abspath(found)
+    if "=" in resolved:
+        raise ValueError(f"{name} resolves to a path containing '=': {resolved}")
+    return resolved
 
 
 def tail_utf8(text: str, max_bytes: int = _STDERR_TAIL_BYTES) -> str:

@@ -168,6 +168,10 @@ def test_export_defaults_to_all_resources_and_scopes_to_a_namespace_and_selector
         "secrets.v1.",
         "pods,secrets",
         "Secret,pods",
+        "pods, secrets",  # whitespace around a part does not hide it
+        "pods ,Secrets",
+        " secrets",
+        "secrets ",
     ],
 )
 def test_export_rejects_secrets(tmp_path, resources):
@@ -204,11 +208,21 @@ def test_export_refuses_argv_injection_through_resources(resources):
 
 
 @pytest.mark.parametrize(
-    "namespace", ["-A", "--all-namespaces", "Prod", "a b", "a;b", "x" * 64, "-prod", "prod-", "a.b"]
+    "namespace", ["", "-A", "--all-namespaces", "Prod", "a b", "a;b", "x" * 64, "-prod", "prod-", "a.b"]
 )
 def test_export_refuses_a_namespace_that_is_not_a_dns_label(namespace):
     with pytest.raises(ValueError, match="namespace"):
         build_export_argv("pods", namespace, None)
+
+
+def test_export_refuses_an_explicit_empty_namespace_instead_of_exporting_everything(tmp_path):
+    """Only an omitted namespace (None) means all namespaces; "" is not that."""
+    script = _write_dump_kubectl(tmp_path, 1)
+
+    with pytest.raises(ValueError, match="namespace"):
+        run_export(_ctx(tmp_path), resources="pods", namespace="", kubectl_path=str(script))
+
+    assert not (tmp_path / "received-argv.json").exists()  # kubectl never ran
 
 
 def test_export_takes_a_selector_as_a_single_flag_token():
@@ -359,12 +373,13 @@ def test_nonzero_exit_reports_stderr_tail(tmp_path):
 
 
 def test_stderr_tail_is_cut_on_a_utf8_boundary(tmp_path):
-    # 2-byte characters: an odd cut would land mid-character.
+    # 2-byte characters plus one trailing byte: 6001 bytes, so the 4096-byte
+    # window starts at an odd offset, in the middle of a character.
     script = _write_fake_kubectl(
         tmp_path,
         """
         import sys
-        sys.stderr.buffer.write(("é" * 3000).encode("utf-8"))
+        sys.stderr.buffer.write(("é" * 3000 + "a").encode("utf-8"))
         sys.exit(1)
         """,
     )
@@ -373,8 +388,10 @@ def test_stderr_tail_is_cut_on_a_utf8_boundary(tmp_path):
 
     tail = result["summary"]["stderrTail"]
     assert "\N{REPLACEMENT CHARACTER}" not in tail
-    assert set(tail) == {"é"}
-    assert len(tail.encode()) == STDERR_TAIL_BYTES  # 4096 is even: whole characters fit exactly
+    assert tail.encode("utf-8").decode("utf-8") == tail  # strict round trip
+    # The half character at the window's start is dropped, not mangled: 2047 whole "é" and the "a".
+    assert tail == "é" * 2047 + "a"
+    assert len(tail.encode()) == STDERR_TAIL_BYTES - 1
 
 
 def test_summaries_carry_exactly_the_fields_their_published_schemas_declare(tmp_path):
@@ -473,6 +490,31 @@ def test_a_missing_kubectl_fails_clearly_and_leaves_no_kubeconfig(tmp_path):
         run_export(ctx, resources="pods", kubectl_path=str(tmp_path / "no-such-kubectl"))
 
     assert not list(ctx.workdir.glob(".kubeconfig-*"))
+
+
+def test_a_binary_path_containing_equals_is_refused(tmp_path):
+    """`env` would read `.../a=b/kubectl` as a variable assignment, not the command."""
+    odd = tmp_path / "a=b"
+    odd.mkdir()
+    script = _write_dump_kubectl(odd, 1)
+    ctx = _ctx(tmp_path)
+
+    with pytest.raises(ValueError, match="'='"):
+        run_export(ctx, resources="pods", kubectl_path=str(script))
+
+    assert not list(ctx.workdir.glob(".kubeconfig-*"))
+    assert not (odd / "received-argv.json").exists()  # kubectl never ran
+
+
+def test_a_relative_kubectl_path_is_made_absolute(tmp_path, monkeypatch):
+    """The child runs in the workdir, so a path relative to the caller's cwd must be resolved first."""
+    _write_dump_kubectl(tmp_path, 1)
+    ctx = _ctx(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    run_export(ctx, resources="pods", kubectl_path="./fake-kubectl")
+
+    assert _dump_path(ctx).stat().st_size == _dump_size(1)
 
 
 def test_a_missing_env_binary_fails_clearly(tmp_path, monkeypatch):

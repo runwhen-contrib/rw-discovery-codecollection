@@ -104,11 +104,15 @@ A result is capped at `maxBytes` and says so with `truncated`. For a truncated `
 result's `fullOutput` (new in `rw.cli_result.v2`) names the queued task that returns all of it and
 the inputs to pass: `{"task": "export", "inputs": {"clusterName": "c1", "resources": "pods",
 "namespace": "web"}}`, or `{"task": "logs", "inputs": {...}}` (see the next section). It covers
-everything the command selected and may cover more (a `get` of named objects exports every object
-of those types, as JSON), and it is not `--grep`-filtered. It is `null` when the result is not
-truncated, the command was rejected, the verb is neither `get` nor `logs`, or no queued task can
-represent the command: no `--namespace`/`--all-namespaces`, `logs --previous` or `--since-time`,
-Secrets. `cli_result.v1.json` stays published for results already produced against it.
+everything the command selected and can cover more (a type followed by names, or several
+`type/name` arguments, export every object of those types, as JSON; a single `type/name` stays as
+given, except across all namespaces), and it is not `--grep`-filtered. One exception: a `logs`
+command with no `--since` maps to the `logs` task's default window of `6h`, which for a quiet pod
+can hold fewer lines than the `cli` call's default tail of 200 lines. `fullOutput` is `null` when
+the result is not truncated, the command was rejected, the verb is neither `get` nor `logs`, or no
+queued task can represent the command: no `--namespace`/`--all-namespaces`, `logs --previous` or
+`--since-time`, Secrets. `cli_result.v1.json` stays published for results already produced against
+it.
 
 ### Inputs (`cli`)
 

@@ -496,6 +496,28 @@
       }
     },
     {
+      "command": "get pod/web-0 -A",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "export",
+        "inputs": {
+          "clusterName": "c1",
+          "resources": "pod"
+        }
+      }
+    },
+    {
+      "command": "get deploy/web svc/web -A",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "export",
+        "inputs": {
+          "clusterName": "c1",
+          "resources": "deploy,svc"
+        }
+      }
+    },
+    {
       "command": "get pods -l app=web -n web",
       "clusterName": "c1",
       "fullOutput": {
@@ -569,6 +591,11 @@
       }
     },
     {
+      "command": "get pod/web-0 svc -n web",
+      "clusterName": "c1",
+      "fullOutput": null
+    },
+    {
       "command": "get pods -n web -o yaml --sort-by=.metadata.name --field-selector=status.phase=Running",
       "clusterName": "c1",
       "fullOutput": {
@@ -582,6 +609,23 @@
     },
     {
       "command": "get pods -n a -n web",
+      "clusterName": "c1",
+      "fullOutput": {
+        "task": "export",
+        "inputs": {
+          "clusterName": "c1",
+          "resources": "pods",
+          "namespace": "web"
+        }
+      }
+    },
+    {
+      "command": "get pods -n web --namespace=",
+      "clusterName": "c1",
+      "fullOutput": null
+    },
+    {
+      "command": "get pods -n web --selector=",
       "clusterName": "c1",
       "fullOutput": {
         "task": "export",

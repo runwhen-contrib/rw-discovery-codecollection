@@ -31,7 +31,7 @@ from runwhen_capability.loader import load_capability, load_manifest
 
 from rwdiscovery import cli
 from rwdiscovery.export import build_export_argv
-from rwdiscovery.logs import build_logs_argv
+from rwdiscovery.logs import DEFAULT_SINCE, build_logs_argv
 from rwdiscovery.models import CliResult
 from rwdiscovery.packbuild import load_pack_yaml
 
@@ -533,7 +533,7 @@ def test_every_full_output_hint_is_accepted_by_the_task_it_names():
                 selector=inputs.get("selector"),
                 workload=inputs.get("workload"),
                 container=inputs.get("container"),
-                since=inputs.get("since", "6h"),
+                since=inputs.get("since", DEFAULT_SINCE),
             )
 
 
@@ -689,6 +689,14 @@ def test_a_rejected_result_fits_the_published_model(tmp_path):
         (["get", "pods", "--namespace=web", "--namespace="], None),
         (["get", "pods", "--namespace=web", "--selector="], {"resources": "pods", "namespace": "web"}),
         (["logs", "web-0", "--namespace=web", "--since="], {"namespace": "web", "workload": "web-0"}),
+        # a single type/name stays as given in a namespace, but across all namespaces kubectl refuses a
+        # get by name, so every type/name is cut back to its type
+        (["get", "pod/a", "--namespace=web"], {"resources": "pod/a", "namespace": "web"}),
+        (["get", "pod/a", "--all-namespaces"], {"resources": "pod"}),
+        (["get", "pod/a", "pod/b", "--all-namespaces"], {"resources": "pod"}),
+        (["get", "pod/a", "svc/b", "--all-namespaces=true"], {"resources": "pod,svc"}),
+        (["get", "pods", "a", "--all-namespaces"], {"resources": "pods"}),
+        (["get", "pod/a", "svc", "--all-namespaces"], None),
         # a resource list kubectl itself refuses is not hinted
         (["get", "pods/a", "svc", "--namespace=web"], None),
         (["get", "/a", "pods/b", "--namespace=web"], None),

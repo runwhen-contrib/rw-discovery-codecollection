@@ -377,17 +377,20 @@ def full_output_for(argv: list[str], *, cluster_name: str | None) -> dict | None
     `argv` (as `validate()` returns it) was cut short, with the inputs to
     give it -- or `None` when no queued task can stand in for the command.
 
-    Never a hint that would fail or narrow what was asked. `None` when the
-    task cannot say what the command meant (`get` with neither `--namespace`
-    nor `--all-namespaces` reads the kubeconfig's own default namespace;
-    `logs` without `--namespace`), when it cannot do it at all (`logs
-    --previous`, `--since-time`), or when it would refuse the inputs (the
-    same builder the task runs, so Secrets, a bad name or `--since` such as
-    `1.5h` come out `None`). Otherwise the task covers a superset: `get pods
-    web-0` becomes every pod, `--output`, `--field-selector` and `--sort-by`
-    are dropped (the export is always JSON), and so are `--grep`, `--tail`
-    and the other `logs` flags the task sets itself; a `logs` command with no
-    `--since` gets the task's own default window.
+    A hint never fails the queued task and never narrows the selection,
+    except for the `logs` default window below. `None` when the task cannot
+    say what the command meant (`get` with neither `--namespace` nor
+    `--all-namespaces` reads the kubeconfig's own default namespace; `logs`
+    without `--namespace`), when it cannot do it at all (`logs --previous`,
+    `--since-time`), or when it would refuse the inputs (the same builder the
+    task runs, so Secrets, a bad name or `--since` such as `1.5h` come out
+    `None`). Otherwise the task covers everything the command selected and
+    can cover more: `get pods web-0` becomes every pod, and `--output`,
+    `--field-selector` and `--sort-by` are dropped (the export is always
+    JSON), as are `--grep`, `--tail` and the other `logs` flags the task sets
+    itself. The exception: a `logs` command with no `--since` gets the logs
+    task's own default window, which for a quiet pod can hold fewer lines
+    than the command's own tail.
 
     `inputs` uses the task's own input names, holds only the ones the command
     supplied (plus `clusterName`, when given), and never a null."""
@@ -444,11 +447,12 @@ def _export_inputs(positionals: list[str], flags: list[_Flag]) -> dict[str, str]
     # Imported here: export.py imports this module.
     from .export import build_export_argv
 
-    resources = _export_resources(positionals)
+    all_namespaces = _is_set(flags, "all-namespaces")
+    resources = _export_resources(positionals, all_namespaces=all_namespaces)
     if resources is None:
         return None
     inputs = {"resources": resources}
-    if not _is_set(flags, "all-namespaces"):
+    if not all_namespaces:
         namespace = _last_value(flags, "namespace")
         if namespace is None:
             return None
@@ -463,14 +467,16 @@ def _export_inputs(positionals: list[str], flags: list[_Flag]) -> dict[str, str]
     return inputs
 
 
-def _export_resources(positionals: list[str]) -> str | None:
+def _export_resources(positionals: list[str], *, all_namespaces: bool) -> str | None:
     """`get`'s positionals as the export's comma list of resource types:
-    `pods`, `pods,svc` and `pods/a` as given; `pods a b` (a type, then names)
-    as the type; `pods/a svc/b pods/c` as `pods,svc`. Always a superset."""
+    `pods`, `pods,svc` and a single `pods/a` as given; `pods a b` (a type,
+    then names) as the type; `pods/a svc/b pods/c` as `pods,svc`. Across all
+    namespaces kubectl refuses a get by name, so there even a single
+    `pods/a` is cut back to its type. Always covers what was asked."""
     if not positionals:
         return None
     first, *rest = positionals
-    if not rest or "/" not in first:
+    if "/" not in first or (not rest and not all_namespaces):
         return first
     kinds: list[str] = []
     for positional in positionals:

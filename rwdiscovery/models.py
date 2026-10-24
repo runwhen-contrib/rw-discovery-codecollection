@@ -93,11 +93,13 @@ class CliFullOutput(BaseModel):
     the `inputs` to pass it, keyed by that task's own input names. `inputs`
     carries only the ones the command supplied, plus `clusterName` when the
     `cli` call knew it. The task's output covers everything the command
-    selected, and can cover more: a `get` of named objects widens to every
-    object of those types, `--grep` and the other presentation flags are
-    ignored (`export` always returns JSON, `logs` always adds `--prefix
-    --timestamps`), and a `logs` command with no `--since` gets the task's
-    own default window."""
+    selected, and can cover more: a type followed by names, or several
+    `type/name` arguments, widen to every object of those types (a single
+    `type/name` stays as given, except across all namespaces), and `--grep`
+    and the other presentation flags are ignored (`export` always returns
+    JSON, `logs` always adds `--prefix --timestamps`). One exception: a
+    `logs` command with no `--since` gets the logs task's default window,
+    which for a quiet pod can hold fewer lines than the `cli` call's tail."""
 
     task: Literal["export", "logs"]
     inputs: dict[str, str]
@@ -109,8 +111,8 @@ class CliResult(BaseModel):
     execs; every other field is the real `kubectl` subprocess result
     otherwise (`stdout`/`stderr` still present, empty, in the rejected
     case). `fullOutput` is set only when `truncated` is true and the
-    command is a `get` or `logs` that a queued task can reproduce in full;
-    it is null in every other case, including a rejected command."""
+    command is a `get` or `logs` that a queued task can stand in for; it is
+    null in every other case, including a rejected command."""
 
     # See DiscoverySummary.SCHEMA_VERSION above.
     SCHEMA_VERSION: ClassVar[int] = 2

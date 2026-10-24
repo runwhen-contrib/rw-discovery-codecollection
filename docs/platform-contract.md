@@ -469,20 +469,23 @@ published, unchanged, for results that were produced against it.
 and the command is a `get` (-> `export`) or a `logs` (-> `logs`); it is always present, `null`
 otherwise. `inputs` is derived from the normalised argv:
 
-- `get` -> `export`: `resources` is the first positional as given (`pods`, `pods,svc`,
+- `get` -> `export`: `resources` is the first positional as given (`pods`, `pods,svc`, a single
   `pods/web-0`); for a type followed by names (`pods a b`) it is the type, and for several
   `type/name` arguments the de-duplicated list of their types. `namespace` and `selector` are the
-  last `--namespace`/`--selector`; `--all-namespaces` (set, not `=false`) leaves `namespace` out.
+  last `--namespace`/`--selector`; `--all-namespaces` (set, not `=false`) leaves `namespace` out
+  and, because `kubectl` refuses a get by name across all namespaces, also cuts every `type/name`
+  back to its type (`pod/web-0 -A` gives `pod`).
 - `logs` -> `logs`: `workload` is the positional (`logs POD CONTAINER` also gives `container`;
   `--container` wins), plus `selector`, `namespace`, `since` (when given; otherwise the task's own
   default applies) and `container` (left out under `--all-containers`).
 - `clusterName` is included when the `cli` call carries one.
 
-The task covers everything the command selected and may cover more, never a narrower slice
-(`get pods web-0` exports every pod; a `logs` without `--since` gets the task's default window).
-`get`'s `--output`, `--field-selector` and `--sort-by` are not carried (the export is always
-JSON), and neither are `--grep`, `--tail` and the other `logs` flags, so the full output is not
-`--grep`-filtered.
+The task covers everything the command selected and can cover more (`get pods web-0` exports
+every pod). `get`'s `--output`, `--field-selector` and `--sort-by` are not carried (the export is
+always JSON), and neither are `--grep`, `--tail` and the other `logs` flags, so the full output is
+not `--grep`-filtered. One exception: a `logs` command with no `--since` maps to the `logs` task's
+default window of `6h`, which for a quiet pod can hold fewer lines than the `cli` call's default
+tail of 200 lines.
 `fullOutput` is `null` whenever the queued task cannot stand in for the command: no namespace
 (neither `--namespace` nor `--all-namespaces`, which would read the kubeconfig's default
 namespace), no resource, `logs --previous` or `--since-time`, both a selector and a workload, or

@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import tracemalloc
 from pathlib import Path
@@ -504,6 +505,23 @@ def test_a_binary_path_containing_equals_is_refused(tmp_path):
 
     assert not list(ctx.workdir.glob(".kubeconfig-*"))
     assert not (odd / "received-argv.json").exists()  # kubectl never ran
+
+
+def test_an_env_path_containing_equals_is_refused(tmp_path, monkeypatch):
+    """The same refusal covers `env` itself: it is the first argv element, but a
+    path with `=` in it is still ambiguous to anything that re-parses the line."""
+    odd = tmp_path / "a=b"
+    odd.mkdir()
+    (odd / "env").symlink_to(shutil.which("env"))
+    script = _write_dump_kubectl(tmp_path, 1)
+    monkeypatch.setenv("PATH", str(odd))
+    ctx = _ctx(tmp_path)
+
+    with pytest.raises(ValueError, match="^env resolves to a path containing '='"):
+        run_export(ctx, resources="pods", kubectl_path=str(script))
+
+    assert not list(ctx.workdir.glob(".kubeconfig-*"))
+    assert not (tmp_path / "received-argv.json").exists()  # kubectl never ran
 
 
 def test_a_relative_kubectl_path_is_made_absolute(tmp_path, monkeypatch):

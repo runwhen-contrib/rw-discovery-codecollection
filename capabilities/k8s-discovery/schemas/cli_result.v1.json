@@ -1,0 +1,79 @@
+{
+  "$defs": {
+    "CliRejection": {
+      "description": "Why the `cli` task's argv was refused (platform-contract \u00a77) --\nnever raised, always carried on `CliResult.rejected`.",
+      "properties": {
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "hint": {
+          "title": "Hint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason",
+        "hint"
+      ],
+      "title": "CliRejection",
+      "type": "object"
+    }
+  },
+  "description": "Output of the `cli` task -- `rw.cli_result.v1`. `rejected` is set,\nand `exitCode` is -1, when `argv` failed validation before anything\nexecs; every other field is the real `kubectl` subprocess result\notherwise (`stdout`/`stderr` still present, empty, in the rejected\ncase).",
+  "properties": {
+    "argv": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Argv",
+      "type": "array"
+    },
+    "exitCode": {
+      "title": "Exitcode",
+      "type": "integer"
+    },
+    "stdout": {
+      "title": "Stdout",
+      "type": "string"
+    },
+    "stderr": {
+      "title": "Stderr",
+      "type": "string"
+    },
+    "truncated": {
+      "title": "Truncated",
+      "type": "boolean"
+    },
+    "stdoutBytes": {
+      "title": "Stdoutbytes",
+      "type": "integer"
+    },
+    "durationMs": {
+      "title": "Durationms",
+      "type": "integer"
+    },
+    "rejected": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CliRejection"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "argv",
+    "exitCode",
+    "stdout",
+    "stderr",
+    "truncated",
+    "stdoutBytes",
+    "durationMs"
+  ],
+  "title": "CliResult",
+  "type": "object"
+}

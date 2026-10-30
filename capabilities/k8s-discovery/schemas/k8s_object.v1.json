@@ -1,0 +1,60 @@
+{
+  "description": "Output of the `inspect` task -- `rw.k8s_object.v1`. Exactly one of\n`object` (mode `get`) or `describe`+`events` (mode `describe`) is set\nwhen `found` is true; all three are null when `found` is false.",
+  "properties": {
+    "path": {
+      "title": "Path",
+      "type": "string"
+    },
+    "found": {
+      "title": "Found",
+      "type": "boolean"
+    },
+    "object": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Object"
+    },
+    "describe": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Describe"
+    },
+    "events": {
+      "anyOf": [
+        {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Events"
+    }
+  },
+  "required": [
+    "path",
+    "found"
+  ],
+  "title": "K8sObjectResult",
+  "type": "object"
+}

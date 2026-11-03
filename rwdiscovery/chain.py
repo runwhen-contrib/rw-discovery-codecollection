@@ -5,10 +5,9 @@ written down (the path/URN grammar, platform-contract §1), and this module
 -- the discovery capability's own code -- decides *what* identifies a
 Kubernetes object (the chain rules below). papi mints the path/URN from a
 chain; this module only ever produces the chain -- it never builds a path
-string itself. `path.py` carries a local, read-only mirror of papi's path
-grammar, built for the `inspect` task's human-facing output; `inspect` has
-since been retired in favour of `cli` (platform-contract §7), which shells
-out to the real `kubectl` instead and has no need of a path mirror.
+string itself. `path.py` carries a local mirror of one encoding rule of papi's
+path grammar (`enc`), which `discover` uses for the scope and parent paths it
+builds itself; nothing in this module uses it.
 
 Rules implemented here:
   - root type is `cluster`, named by the `clusterName` input;
@@ -24,8 +23,10 @@ Rules implemented here:
   - name case is `preserve` for every Kubernetes type (DNS-1123 names are
     already lowercase; RBAC/kubeconfig names can carry uppercase).
 
-`packs/kubernetes/pack.yaml` ships the same table as data, registered with
-papi. `tests/test_pack_yaml.py` cross-checks the two never drift.
+`packs/kubernetes/pack.yaml` deliberately carries no `types`:
+`packbuild.build_pack_payload` generates them from this table when `discover`
+builds the registration payload. `tests/test_pack_yaml.py` asserts `types` is
+absent from the file.
 """
 
 from __future__ import annotations

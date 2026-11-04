@@ -11,14 +11,14 @@ readme = "README.md"
 license = { file = "LICENSE" }
 dependencies = [
     # The SDK lives in its own repo, runwhen-contrib/runwhen-capability. Pinned
-    # to its v0.4.0 release tag, as that repo's README asks capability repos to
-    # do. pip's --require-hashes mode does not support VCS requirements at all,
+    # by commit to b18be9c (contracts-v7 on its v13/plugins-m3 branch; S20: the
+    # executor sends X-RW-Dispatch) until a V13 release tag replaces it. pip's --require-hashes mode does not support VCS requirements at all,
     # so this is installed in its own, non-hash-checked `pip install` step in
     # Dockerfile.k8s-discovery; see that file's comment. That repo's own
     # pyproject.toml lives at its repo root and packages src/, so a plain git
     # dependency (no `subdirectory=`) resolves to the runwhen_capability package
     # alone.
-    "runwhen-capability @ git+https://github.com/runwhen-contrib/runwhen-capability@v0.4.0",
+    "runwhen-capability @ git+https://github.com/runwhen-contrib/runwhen-capability@b18be9c22174bf76d164b3a287eefcf392a4a857",
     "kubernetes>=30,<31",
     "jmespath>=1.0,<2",
     # Used directly by sync.py (the sync protocol's HTTP client) -- already a

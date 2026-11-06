@@ -8,13 +8,13 @@
 #
 # It ships:
 #   - the runwhen_capability SDK and its rwtask task host (installed from
-#     runwhen-contrib/runwhen-capability, pinned to its v0.4.0 release tag --
+#     runwhen-contrib/runwhen-capability, pinned by commit to b18be9c, contracts-v7 --
 #     see pyproject.toml)
 #   - rwdiscovery/, the Python core (chain, sanitize, rollups, pack, sync)
 #   - the k8s-discovery capability's tasks (capabilities/k8s-discovery/)
 #
 # Dependencies are pinned by one of two mechanisms:
-#   runwhen-capability (the SDK) -- pinned to its v0.4.0 release tag in
+#   runwhen-capability (the SDK) -- pinned by commit (b18be9c, contracts-v7) in
 #     pyproject.toml. pip's --require-hashes mode does not support VCS
 #     requirements at all, so this is installed in its OWN, non-hash-checked
 #     `pip install` step, same as rw-checks-codecollection installs its SDK
@@ -76,14 +76,14 @@ COPY requirements.txt /build/requirements.txt
 RUN pip install --no-cache-dir --require-hashes -r /build/requirements.txt \
     && rm -rf /build
 
-# The SDK (runwhen-contrib/runwhen-capability), pinned to its v0.4.0 release
-# tag in pyproject.toml -- see the header comment above for why this is a
+# The SDK (runwhen-contrib/runwhen-capability), pinned by commit (b18be9c,
+# contracts-v7) in pyproject.toml -- see the header comment above for why this is a
 # separate, non-hash-checked install step.
 WORKDIR /app
 COPY pyproject.toml README.md LICENSE /app/
 COPY rwdiscovery /app/rwdiscovery
 RUN pip install --no-cache-dir --no-deps /app \
-    && pip install --no-cache-dir "runwhen-capability @ git+https://github.com/runwhen-contrib/runwhen-capability@v0.4.0"
+    && pip install --no-cache-dir "runwhen-capability @ git+https://github.com/runwhen-contrib/runwhen-capability@b18be9c22174bf76d164b3a287eefcf392a4a857"
 
 # ---------------------------------------------------------------------------
 # kubectl -- platform-contract §7's `cli` task execs the real binary; fetched

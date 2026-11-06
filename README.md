@@ -443,7 +443,7 @@ batch sequencing, sanitization, rollups, and commit partitions end to end.
 
 This repo depends on `runwhen_capability` from
 [`runwhen-contrib/runwhen-capability`](https://github.com/runwhen-contrib/runwhen-capability), pinned
-to its `v0.4.0` release tag (`pyproject.toml` and `Dockerfile.k8s-discovery`)
+by commit to `b18be9c` (contracts-v7 on its `v13/plugins-m3` branch, until a V13 release tag) (`pyproject.toml` and `Dockerfile.k8s-discovery`)
 (pip's `--require-hashes` mode does not support VCS requirements at all, so this one dependency
 installs in its own, non-hash-checked step in `Dockerfile.k8s-discovery`; see that file's header
 comment). No packaging changes were needed upstream: that repo's own `pyproject.toml` lives at its
